@@ -1,0 +1,181 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
+#   However, in case of collaboration, if having platform-specific dependencies or dependencies
+#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   install all needed dependencies.
+#Pipfile.lock
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+/.idea/modules.xml
+/.idea/.gitignore
+/.idea/FEETECH-Servo-Python-SDK.iml
+/.idea/misc.xml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/vcs.xml
+/Scripts/activate
+/Scripts/activate.bat
+/Scripts/activate.fish
+/Scripts/activate.nu
+/Scripts/activate.ps1
+/Scripts/activate_this.py
+/Scripts/cmark.exe
+/Scripts/deactivate.bat
+/Scripts/deactivate.nu
+/Scripts/docutils.exe
+/Scripts/keyring.exe
+/Scripts/normalizer.exe
+/Scripts/pip.exe
+/Scripts/pip3.9.exe
+/Scripts/pip3.exe
+/Scripts/pip-3.9.exe
+/Scripts/pkginfo.exe
+/Scripts/pydoc.bat
+/Scripts/pygmentize.exe
+/Scripts/python.exe
+/Scripts/pythonw.exe
+/pyvenv.cfg
+/Scripts/rst2html.py
+/Scripts/rst2html4.py
+/Scripts/rst2html5.py
+/Scripts/rst2latex.py
+/Scripts/rst2man.py
+/Scripts/rst2odt.py
+/Scripts/rst2odt_prepstyles.py
+/Scripts/rst2pseudoxml.py
+/Scripts/rst2s5.py
+/Scripts/rst2xetex.py
+/Scripts/rst2xml.py
+/Scripts/rstpep2html.py
+/Scripts/twine.exe
+/Scripts/wheel.exe
+/Scripts/wheel3.9.exe
+/Scripts/wheel3.exe
+/Scripts/wheel-3.9.exe
+
+./servos.json
+./servos_0.json
+/servos_*.json
+!/servos_template.json
+/customize.py
+data/
