@@ -106,7 +106,8 @@ nohup python -m expctl.servers.servoaligner.clip_scan > clip.log 2>&1 &
 ```
 
 What they do and the physics behind them: [application.md](application.md)
-(beam centering & MOT alignment), [spiral.md](spiral.md) (the optimizer), and
+(beam centering & MOT alignment), [spiral.md](spiral.md) (the 2D optimizer),
+[optimize.md](optimize.md) (how spiral stages chain into a full round), and
 [jacobian.md](jacobian.md) (the coupling calibration). Output folders
 (`FOLDER`, dataset paths) are hard-coded near the top of each script — point them
 at a writable location before running.

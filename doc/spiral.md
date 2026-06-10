@@ -2,7 +2,9 @@
 
 This note explains **why** we use a custom "spiral descent" search to maximize
 fiber coupling (and beam alignment generally), and **how** it is implemented in
-`src/spiral.py` / `src/pts_iterator.py` / `src/step_optimize.py`.
+`src/spiral.py` / `src/pts_iterator.py` / `src/step_optimize.py`. How spiral
+stages are chained into a full optimization round is described in
+[optimize.md](optimize.md).
 
 ## The optimization problem
 
@@ -41,7 +43,7 @@ that adjacent-in-time samples should be adjacent-in-space to keep moves short.
 
 ## The spiral descent idea
 
-The algorithm has four ingredients (labels from the developer notes):
+The spiral itself has two ingredients (labels from the developer notes):
 
 - **A — space-filling spiral.** Sample along an Archimedean spiral that
   gradually fills the 2D plane. Consecutive points are *close together*, so
@@ -50,12 +52,11 @@ The algorithm has four ingredients (labels from the developer notes):
   `(x0, y0)` is continuously pulled in the direction of the intensity-weighted
   centroid of recent samples — a noise-robust, gradient-like update. The search
   "flows uphill" while it scans.
-- **C — iterate between pairs of knobs.** Instead of one high-dimensional
-  optimization, optimize one 2D knob-pair at a time (e.g. `X_XDOT`, then
-  `Y_YDOT`) and repeat. This keeps every spiral 2D and sidesteps the curse of
-  dimensionality.
-- **D — finish with a gradient step.** Once the spiral has found the basin, run
-  **L-BFGS-B** over all knobs for the final tightening.
+
+Two further ingredients — **C** (iterate between 2D knob pairs) and **D**
+(finish with a full-dimensional gradient step) — concern how spiral stages are
+*chained* into a full optimization round, not the spiral itself; see
+[optimize.md](optimize.md).
 
 ## How the spiral works (`SpiralPath` in `spiral.py`)
 
@@ -86,20 +87,6 @@ is **2D only** — `pts_iterator` asserts `N_var == 2` for `method="spiral"`.
 Tuned parameters live in `step_optimize.py` (`spiral_params`): `I_meaningful`,
 `D`, `SPIRAL_RESOLUTION`, `SPIRAL_SPAN`, `COEF_I_RESET_ORIGIN`, `alpha`, …
 
-## Iterating between knob pairs
-
-Because the two knobs of a mirror are coupled, optimizing one pair shifts the
-optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and
-watch the cloud tighten around the peak over successive passes:
-
-| 1st pass | 2nd pass | 3rd pass | 4th pass |
-|---|---|---|---|
-| ![iter 1](figs/spiral_xxdot_yydot_iter1.png) | ![iter 2](figs/spiral_xxdot_yydot_iter2.png) | ![iter 3](figs/spiral_xxdot_yydot_iter3.png) | ![iter 4](figs/spiral_xxdot_yydot_iter4.png) |
-
-Left panel: visited points colored by intensity, with the dragged `(x0, y0)`
-center trajectory; right panel: intensity vs iteration. Across passes the
-visited cloud contracts toward the bright region.
-
 ## Where it all plugs together
 
 - **`spiral.py` — `SpiralPath`**: the spiral-descent algorithm itself
@@ -113,15 +100,6 @@ visited cloud contracts toward the bright region.
   given `pos_mask`, then **only commits the new origin if the final intensity
   stays ≥ 70 % of the best seen** (guards against ending on a bad/noisy point).
 
-A full alignment stage (see `calibrate_jacobian.py`) chains these as:
-
-```python
-zero = step_optimize(..., pos_mask=A_X_Y_MASK,    bounds_single=(-100,100))  # coarse centering
-zero = step_optimize(..., pos_mask=A_X_XDOT_MASK)                            # spiral on X / Xdot
-zero = step_optimize(..., pos_mask=A_Y_YDOT_MASK)                            # spiral on Y / Ydot
-zero = step_optimize(..., pos_mask=A_POS_ALL_MASK, method='L-BFGS-B')        # final gradient step
-```
-
-That is ingredients **C** (iterate knob pairs) followed by **D** (gradient
-finish). The resulting `zero` (the optimized knob origin) is what the
-[Jacobian calibration](jacobian.md) collects across many imposed offsets.
+How these stages are chained into a full optimization round — spiral passes on
+each coupled 2D knob-pair subspace, then a 4D **L-BFGS-B** finish — is
+described in [optimize.md](optimize.md).

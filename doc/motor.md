@@ -1,9 +1,7 @@
 # STS3032 Servo — Register & Position Setup
 
-This note covers the FEETECH **STS3032** serial-bus servos used to turn the
-mirror-mount knobs: how positions are encoded, the one register you must change
-by hand (**Register 18**), and the control-table registers the driver
-(`src/servodriver.py`) reads and writes at run time.
+We use FEETECH **STS3032** serial-bus servos used to turn the
+mirror-mount knobs.
 
 ## Connection
 
@@ -13,8 +11,9 @@ Raspberry Pi  →  URT / serial driver board  →  servo 1 → servo 2 → … (
 
 Servos share one serial bus and are addressed by **ID** (not by position on the
 chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in
-`customize.py` (`sts3032_dict`). Default bus settings: **baudrate 1 000 000**,
-SCS/STS protocol (`protocol_end = 0`).
+`customize.py` (`sts3032_dict`).
+
+Default bus settings: **baudrate 1 000 000**,
 
 ## Encoder & angle convention
 
@@ -28,7 +27,8 @@ position  = angle_deg * 4096 / 360 + 2048        # angle_to_position / a2p
 
 So one encoder step ≈ 0.088°, and one full knob turn = 4096 steps.
 
-### Multi-turn
+### Multi-
+
 
 A knob often needs **more than one turn**. There are two ways to track it:
 
@@ -111,21 +111,6 @@ servo it compares the goal to the current position:
   `goal − 100`** encoder steps, then move **up** to the goal — so the knob always
   settles while turning in the `+` direction.
 
-```python
-POS_THRESHOLD = 2
-# per servo: flag a de-hysteresis move when goal is below current by > 2 steps
-if (d_pos < 0) and (abs(d_pos) > POS_THRESHOLD):
-    de_hysterisis_mask[i] = 1
-...
-# overshoot 100 steps below, then come back up to the goal
-goal_position_list_deh = [x - 100 if de_hysterisis_mask[i] else x for i, x in ...]
-self._set_position(goal_position_list_deh)   # go low
-self._set_position(goal_position_list)        # approach goal from below
-```
-
-> The developer note describes the idea with a ~5-step trigger and a ~50-step
-> overshoot; the code as shipped uses **2** and **100**. The mask is per-servo,
-> so only the channels that are actually moving negative pay the extra move.
 
 ### Toggling it
 
@@ -136,11 +121,3 @@ self._set_position(goal_position_list)        # approach goal from below
   `clip_scan.py` runs with it **off** (a long raster scan where speed wins).
   Turn it on whenever calibration accuracy matters.
 
-## Practical gotchas
-
-- **Power loss resets turn count** (repeated because it bites): re-zero after any
-  driver-board power cycle.
-- **Position persistence:** the last-known positions are saved to
-  `servos_0.json` on every move and at exit (`atexit`), and reloaded on startup
-  so software turn counting survives a *program* restart (but not a *power*
-  loss).

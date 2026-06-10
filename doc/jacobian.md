@@ -4,23 +4,27 @@ This note explains **what** the Jacobian means for our mirror mounts, **why** we
 calibrate it numerically instead of from geometry, and **how** the calibration
 in `src/calibrate_jacobian.py` works.
 
-## The setup: two paths, eight knobs
+## The setup: forward and backward paths, overlapped
 
 There are **two beam paths** that must stay **mode-matched** (e.g. two
-counter-propagating beams overlapping through the cavity / fiber). Each path is
-steered by **two mirrors × two knobs = four knobs**:
+counter-propagating beams overlapping through the cavity / fiber).
 
-- Path **A** (upper): knobs `A1…A4` = `x, y, xdot, ydot`
-- Path **B** (lower): knobs `B1…B4` = `x, y, xdot, ydot`
+Each path is steered by **two mirrors × two knobs = four knobs**:
+- Path **A** (upper): knobs `A1, A2, A3, A4`
+- Path **B** (lower): knobs `B1, B2, B3, B4`
 
-where on each mirror one knob is mainly a **position** adjust (`x`, `y`) and the
-other mainly an **angle** adjust (`xdot`, `ydot`).
+If we take the plane in the middle and establish a xOy coordinate system, the knobs are arranged such that, to first order, they control:
+- The far-away knobs: `A1, A2` mainly control **positions** (`x`, `y`);
+- The near knobs: `A3, A4` mainly control **angles** ($\theta_x$, $\theta_y$, here we name them as `x_dot` and `y_dot`);
+- The same applies to path B.
+
+To control only positions or angles, we need to change a pair of knobs together in a linear combination (e.g. `A1` and `A3` together to change `x` without changing `theta_x`), that's what we mean by "walking the beam".
 
 ![Beam-path diagram: A1–A4 and B1–B4 steer two crossing beams](figs/jacobian_beam_path_diagram.jpg)
 
 ![The physical mounts on the optical table](figs/optical_table_setup.jpg)
 
-## What "the Jacobian" is here
+## What is the "Jacobian"
 
 Suppose we **move the four knobs of one path** (call them the **master** knobs,
 $A$) — for example because we are walking the beam to a new target. To keep the
@@ -28,41 +32,31 @@ two beams mode-matched, the **other path's knobs** (the **slave** knobs, $B$)
 must move too. The relationship, to first order, is a **4×4 Jacobian matrix**:
 
 $$
-J_{ji} \;=\; \frac{\partial B_j}{\partial A_i}
-\qquad\Longrightarrow\qquad
-\Delta B \;=\; J \,\Delta A .
+J_{ij} \;=\; \frac{\partial B_i}{\partial A_j}
 $$
 
 Once $J$ is known, you can drive the master knobs freely and have the slave
 knobs **follow automatically** to preserve coupling — no re-optimization needed.
 
-In code this is exactly what [`compose_para`](../src/servo_util.py) does: given a
-master move `dA` it sets the slave knobs by `dB = J·(dA − offset)`, where
-`jac_master_mask` selects which channels are the masters. The
-[spiral/L-BFGS optimizer](spiral.md) is what finds the optimal $B$ for each
-imposed $A$ during calibration.
+> In code this is exactly what [`compose_para`](../src/servo_util.py) does: given a
+master move `dA` it sets the slave knobs by `dB = J·(dA − offset)`, where `jac_master_mask` selects which channels are the masters. The
+[staged spiral/L-BFGS optimization](optimize.md) is what finds the optimal $B$ for each imposed $A$ during calibration.
 
 ## Why a numeric ("no-model") Jacobian?
 
 The knob geometry *can* be written analytically (a model-based Jacobian, as
 formulated for the ideal mount). We deliberately use the **numeric, no-model**
 version instead because:
+1. **The geometry of mirrors may be hard to measure**, to get the geometric model, you need to measure the mirror positions in 3d space, and the lever arms from the knobs to the beam, which is not easy to do with high precision.
 
-1. **The knobs are coupled.** The mirror's x- and y-tilt are **not** controlled
-   independently by the x and y knobs — there is cross-coupling the simple model
-   ignores.
-2. **The model only holds near perfect coupling.** You can compute knob
-   positions analytically *on* the coupling condition, but once the system is
-   **off-coupling** (which is exactly when you need help) the analytic
-   expression no longer applies.
+2. **The knobs are coupled.** In an realistic mirror mount, the mirror's x- and y-tilt are **not** controlled independently by the x and y knobs — there is cross-coupling the simple model ignores.
 
-A numeric Jacobian, measured on the real hardware, captures the actual coupling
-including the 3D-printed-frame imperfections.
 
-## How calibration works (`calibrate_jacobian.py`)
 
-The core loop turns the physics statement *"for any master setting $A$, find the
-slave setting $B$ that maximizes coupling"* into data:
+
+## How to calibrate the Jacobian (`calibrate_jacobian.py`)
+
+The core loop turns the physics statement *"for any master setting $A$, find the slave setting $B$ that maximizes coupling"* into data:
 
 1. **Impose a master offset.** Choose an offset vector for the master path's
    knobs. The offset *type* is selectable:
@@ -70,65 +64,20 @@ slave setting $B$ that maximizes coupling"* into data:
    - `rand` — a random unit direction scaled to `normd`,
    - `lin` — a random combination of known coupling directions (`vecs`),
    - `zero` — no offset (re-optimize in place).
-2. **Optimize the slave path.** With the master held at the imposed offset, run
-   the staged [spiral + L-BFGS-B optimization](spiral.md) over the slave knobs:
-
-   ```python
-   zero = step_optimize(..., pos_mask=X_Y_MASK,    bounds_single=(-100,100))
-   zero = step_optimize(..., pos_mask=X_XDOT_MASK)                 # spiral
-   zero = step_optimize(..., pos_mask=Y_YDOT_MASK)                 # spiral
-   zero = step_optimize(..., pos_mask=POS_ALL_MASK, method='L-BFGS-B')
-   ```
-
-   This yields the optimal slave knob positions for that master offset.
-3. **Record the pair.** Save `(offset, optimal_slave_positions, intensity)` into
-   the dataset (`jacobian_<type>_<normd>.npy`).
+2. **Optimize the slave path.** With the master held at the imposed offset, run the staged [spiral + L-BFGS-B optimization](optimize.md) over the slave knobs to maximize the objective function (for example fiber coupling efficiency). The result yields the optimal slave knob positions for that master offset.
+3. **Record the pair.** into the dataset (`jacobian_<type>_<normd>.npy`).
 4. **Repeat** over many offsets / directions to build up a cloud of
    $(\Delta A, \Delta B)$ pairs, then **least-squares fit** $J$ from
    $\Delta B = J\,\Delta A$ (the fit itself is done in the analysis notebooks).
 
-> In the shipped script, `MASTER = "B"`: path **B** receives the imposed offset
-> (`offset_mask = B_POS_ALL_MASK`) and path **A** is the one optimized. Which
-> path is master is just a configuration choice — the roles are symmetric.
+> Which path is master is just a configuration choice — the roles are symmetric.
 
 A single calibrated 4×4 Jacobian (here from the small `pm_10` offset set) looks
 like:
 
 ![A calibrated 4×4 Jacobian (∂B/∂A) from the pm_10 offset set](figs/jacobian_calibrated_pm10.png)
 
-## Running the optimization in code
 
-This section maps the loop above onto the actual code in
-`src/calibrate_jacobian.py` and the helpers it calls. To run it:
-
-```bash
-python calibrate_jacobian.py      # from src/ (touches hardware immediately)
-```
-
-### The objective: `callback_func`
-
-Every optimizer call goes through one objective that turns a reduced parameter
-vector into a servo move and a photodiode reading:
-
-```python
-def callback_func(para, pos_mask, zero=None, jac=None, jac_master_mask=None, **kw):
-    para_nr_move = compose_para(para, pos_mask, zero, jac, jac_master_mask, **kw)
-    servos.set_angle(list(para_nr_move))          # move the motors
-    z = np.mean([MCP3424_fiber.convert_and_read() # read photodiode twice, average
-                 for _ in range(2)])
-    return tuple(para), z                          # (param, intensity)
-```
-
-- `pos_mask` selects which of the 8 channels `para` addresses (the masks in
-  `servo_const.py`, e.g. `A_X_XDOT_MASK`).
-- `zero` is the current origin the parameter steps from.
-- `jac` / `jac_master_mask` (optional) make the **slave** knobs follow the
-  **master** knobs while scanning — see `compose_para` below.
-
-> ⚠️ `callback_func` is **copy-pasted** into `clip_scan.py`,
-> `calibrate_jacobian.py`, and `callback_func.py`; it relies on module-level
-> `servos` and `MCP3424_fiber`, so the standalone `callback_func.py` copy only
-> works inside a namespace that defines them.
 
 ### `compose_para` — where the Jacobian is applied
 
@@ -157,7 +106,7 @@ offset = cord_pm_offset(...)                   # or random_norm_offset / lin_com
 zero = compose_para(para=offset, pos_mask=offset_mask, zero=zero,
                     jac=jac_assume, jac_master_mask=offset_mask, jac_x0=jac_x0)
 
-# optimize the slave path on top of that origin (staged: see spiral.md)
+# optimize the slave path on top of that origin (staged: see optimize.md)
 zero = step_optimize(servos, callback_func, pos_mask=A_X_Y_MASK,  zero=zero, bounds_single=(-100,100))
 zero = step_optimize(servos, callback_func, pos_mask=A_X_XDOT_MASK, zero=zero)               # spiral
 zero = step_optimize(servos, callback_func, pos_mask=A_Y_YDOT_MASK, zero=zero)               # spiral
@@ -170,7 +119,7 @@ np.save(filename, dataset)
 
 `step_optimize` runs one stage via `pts_iterator` (spiral / L-BFGS-B / Powell)
 and **only commits the new origin if the final intensity stays ≥ 70 % of the best
-seen** — see [spiral.md](spiral.md).
+seen** — see [optimize.md](optimize.md).
 
 ### Knobs to set before running
 
@@ -256,6 +205,7 @@ mode matching within this region"* — and a direct argument for the
 [extrapolation](#extrapolation-bootstrapping-from-small-to-large-steps) loop,
 which widens the region where `mu` stays flat.
 
-See also [spiral.md](spiral.md) for the optimizer used at each calibration point,
-and [motor.md](motor.md) for the encoder/de-hysteresis behavior that limits
+See also [spiral.md](spiral.md) for the 2D search, [optimize.md](optimize.md)
+for the staged optimization round run at each calibration point, and
+[motor.md](motor.md) for the encoder/de-hysteresis behavior that limits
 calibration accuracy.
