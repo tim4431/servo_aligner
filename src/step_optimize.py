@@ -1,7 +1,7 @@
 import numpy as np
 from pts_iterator import pts_iterator
 import logging
-from servo_util import create_zigzag_X, format_para,a2p,r2nd,r2nr,ndmodr,nrselr,nrmodr,nraddr
+from servo_util import format_para, nraddr
 
 #
 spiral_params = {
@@ -35,6 +35,8 @@ def step_optimize(servos,
     elif method == 'spiral':
         # servos.set_precision(5)
         options = spiral_params
+    else:
+        raise ValueError(f"unknown method: {method}")
     #
     N_var = np.sum(pos_mask)
     if p0 is None:

@@ -1,5 +1,5 @@
 # fit X,Y,Z to a 2D gaussian
-from scipy.optimize import curve_fit
+from scipy.optimize import least_squares
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import erfc
@@ -103,8 +103,6 @@ def fit_gaussian_2d(X,Y,Z,p0=None,offset=False):
             p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1], scale, offset])
         print("Initial guess for p0: ", p0)
 
-    from scipy.optimize import least_squares
-
     res = least_squares(_residuals, p0, args=(xdata, ydata, zdata))
     popt = res.x
     return popt
@@ -127,8 +125,6 @@ def fit_gaussian_2d_smooth_heaviside(X,Y,Z,p0=None):
         mu, cov = statistics_for_gaussian2d(X, Y, Z)
         p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1], np.max(Z)/2, 0.1])
         print("Initial guess for p0: ", p0)
-
-    from scipy.optimize import least_squares
 
     res = least_squares(_residuals, p0, args=(xdata, ydata, zdata))
     popt = res.x
@@ -185,10 +181,14 @@ def statistics_skewness(X0,Z_row):
     return ZZZX(X0,Z_row)/ZZX(X0,Z_row)**1.5
 
 if __name__ == "__main__":
-    # test
-    x = np.linspace(-1,1,20)
-    y = np.linspace(-1,1,20)
-    X,Y = np.meshgrid(x,y)
-    Z = gaussian_2d((X,Y),1,0,0,0.5,0.5,0,0)
-    popt = fit_gaussian_2d(X,Y,Z)
-    print(popt)
+    # round-trip test: generate a 2D Gaussian, then fit it back
+    x = np.linspace(-1, 1, 20)
+    y = np.linspace(-1, 1, 20)
+    X, Y = np.meshgrid(x, y)
+    mu_true = np.array([0.1, -0.2])
+    cov_true = np.array([[0.2, 0.05], [0.05, 0.1]])
+    Z = np.array([[gaussian_2d(xi, yi, mu_true, cov_true) for xi, yi in zip(xr, yr)]
+                  for xr, yr in zip(X, Y)])
+    popt = fit_gaussian_2d(X, Y, Z)
+    print("true mu, cov:    ", mu_true, cov_true.ravel())
+    print("recovered mu, cov:", popt_get_mu_cov(popt))

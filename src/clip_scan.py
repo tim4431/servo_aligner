@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from scservo_sdk import *                    # Uses SCServo SDK library
 from pts_iterator import pts_iterator
 import logging
 
@@ -12,10 +11,10 @@ logging.basicConfig(
 )
 
 from servodriver import Servoset
-from servo_util import create_zigzag_X, format_para,a2p,r2nd,r2nr,ndmodr,nrselr,nrmodr,nraddr,compose_para
+from servo_util import nraddr, compose_para
 from fit_gaussian import gaussian_2d,gaussian_2d_smooth_heaviside,fit_and_plot,fit_gaussian_2d,fit_gaussian_2d_smooth_heaviside,fit_and_plot_smooth_heaviside,popt_get_mu_cov
 from motor_scan import motor_2d_scan
-from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_XDOT_YDOT_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_XDOT_YDOT_MASK,B_POS_ALL_MASK,POS_ALL_MASK, posmask2str
+from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,POS_ALL_MASK, posmask2str
 from pd import MCP3424_fiber
 from step_optimize import step_optimize
 
@@ -44,7 +43,7 @@ def callback_func(para,
             # data = ADS1115_fiber.value
             data = MCP3424_fiber.convert_and_read()
             data_cache.append(data)
-        z = float(np.mean(np.array(data)))
+        z = float(np.mean(np.array(data_cache)))
         # print(para,z)
         return tuple(para),z
 

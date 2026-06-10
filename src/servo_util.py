@@ -37,7 +37,7 @@ def r2nr(r,r_mask=None)->np.ndarray:
     # arbitrary r embedded in the mask
     r = list(r)
     assert np.sum(r_mask) == len(r), ValueError("r2nr: r_mask should have the same 1 as len(r)")
-    pos = np.zeros_like(r_mask,dtype=np.float_)
+    pos = np.zeros_like(r_mask,dtype=np.float64)
     for i in range(len(r_mask)):
         if r_mask[i]:
             pos[i] = r.pop(0)

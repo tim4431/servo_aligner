@@ -86,6 +86,10 @@ crosstalk_matrix_rot = lambda tknob1, tknob2: np.array(
 )
 
 
-zero=np.array([0, 0, 0, 0],dtype=float)
-Z = calc_data(crosstalk_matrix=crosstalk_matrix, zero=zero, scan_type="xxdot")
-plt.show()
+if __name__ == "__main__":
+    zero = np.array([0, 0, 0, 0], dtype=float)
+    Z, xZ, tZ = calc_data(crosstalk_matrix=crosstalk_matrix, zero=zero, scan_type="xxdot")
+    plt.imshow(Z, origin="lower", extent=[X.min(), X.max(), Y.min(), Y.max()])
+    plt.title("transmission (xxdot scan)")
+    plt.colorbar()
+    plt.show()

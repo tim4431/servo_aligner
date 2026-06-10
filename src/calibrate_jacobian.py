@@ -13,9 +13,8 @@ logging.basicConfig(
 )
 
 from servodriver import Servoset
-from servo_util import create_zigzag_X, format_para,a2p,r2nd,r2nr,ndmodr,nrselr,nrmodr,nraddr,compose_para
-import tqdm
-from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_XDOT_YDOT_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_XDOT_YDOT_MASK,B_POS_ALL_MASK,POS_ALL_MASK
+from servo_util import compose_para
+from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_POS_ALL_MASK,POS_ALL_MASK
 from step_optimize import step_optimize
 
 servos = Servoset(board_id=0,servo_channel_list=[0,1,2,3,4,5,6,7])
@@ -41,7 +40,7 @@ def callback_func(para,
             # data = ADS1115_fiber.value
             data = MCP3424_fiber.convert_and_read()
             data_cache.append(data)
-        z = float(np.mean(np.array(data)))
+        z = float(np.mean(np.array(data_cache)))
         # print(para,z)
         return tuple(para),z
 
@@ -68,13 +67,24 @@ def lin_comb_offset(N,normd, vecs,i):
     offset = vec_norm_distrib*normd
     return offset
 
-jac_assume_x0 = np.load('/home/rydpiservo/servodata/servosetup5/jac_rand_11.npz',allow_pickle=True)
-jac_assume = np.array(jac_assume_x0['jac'])
-# jac_x0 = np.array(jac_assume_x0['x0'])
-print(jac_assume)
-# print(jac_x0)
-jac_assume = None
-jac_x0 = None
+def load_assumed_jac(path):
+    """Load a previously-fit Jacobian for extrapolation bootstrapping.
+
+    Returns ``(jac, jac_x0)``. With ``path=None`` returns ``(None, None)`` so the
+    calibration starts from the plain origin instead of a prior Jacobian.
+    """
+    if path is None:
+        return None, None
+    d = np.load(path, allow_pickle=True)
+    jac = np.array(d['jac'])
+    jac_x0 = np.array(d['x0']) if 'x0' in d else None
+    return jac, jac_x0
+
+
+# Bootstrap from a previously-fit Jacobian (extrapolation): set to an .npz path
+# containing a 'jac' (and optional 'x0') array, or None to start from the origin.
+JAC_ASSUME_PATH = None
+jac_assume, jac_x0 = load_assumed_jac(JAC_ASSUME_PATH)
 
 cf00 = lambda para: callback_func(para, pos_mask=POS_ALL_MASK,zero=np.array([0,0,0,0,0,0,0,0],dtype=float))
 print(cf00([0,0,0,0,0,0,0,0]))

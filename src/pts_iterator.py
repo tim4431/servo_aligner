@@ -1,5 +1,5 @@
-from typing import List, Tuple, Callable,Union
-import scipy
+from typing import List, Tuple, Callable
+import scipy.optimize
 import matplotlib.pyplot as plt
 import logging
 import numpy as np
@@ -14,6 +14,22 @@ def pts_iterator(
     method: str = "spiral",
     options: dict = {}
 ):
+    """Maximize a noisy objective over `N_var` knobs and return the best point seen.
+
+    Dispatches to one of three optimizers, records every evaluated
+    ``(para, intensity)`` sample, and plots the search trace and convergence curve.
+
+    Args:
+        N_var: Number of free parameters (must match ``len(p0)`` and ``len(bounds)``).
+        callback_func: Objective ``para -> (para, intensity)``; intensity is maximized.
+        p0: Starting point.
+        bounds: Per-parameter ``(min, max)`` limits.
+        method: ``"spiral"`` (custom spiral descent, 2D only), ``"L-BFGS-B"``, or ``"Powell"``.
+        options: Optimizer options dict (e.g. ``spiral_params`` / ``BFGS_params``).
+
+    Returns:
+        ``(best_para, best_intensity)`` — the highest-intensity sample observed.
+    """
     assert len(p0) == N_var, ValueError(f"len(p0) should be {N_var}")
     assert len(bounds) == N_var, ValueError(f"len(bounds) should be {N_var}")
     if method == "spiral":

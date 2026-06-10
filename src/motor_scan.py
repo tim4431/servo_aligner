@@ -2,7 +2,7 @@ import numpy as np
 import tqdm
 import matplotlib.pyplot as plt
 import logging
-from servo_util import create_zigzag_X, r2nd
+from servo_util import create_zigzag_X
 
 def motor_1d_scan(N_pts, scan_range,scan_vec, servo, callback_func, accept_func=None):
     L = np.linspace(-scan_range,scan_range,N_pts)
