@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "servo-aligner"
+version = "1.0.0.dev0"
+description = "Automated laser-beam alignment with serial-bus servo motors (FEETECH STS3032) and photodiode feedback"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pyyaml",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+hardware = ["smbus2", "MCP342x", "pyserial"]
+plot = ["matplotlib"]
+server = ["pyzmq", "coloredlogs"]
+dev = ["pytest", "matplotlib"]
+
+[project.scripts]
+servo-aligner = "servo_aligner.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["servo_aligner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -173,9 +173,9 @@ dmypy.json
 /Scripts/wheel3.exe
 /Scripts/wheel-3.9.exe
 
-./servos.json
-./servos_0.json
-/servos_*.json
-!/servos_template.json
-/customize.py
+servos_*.json
+!servos_template.json
+customize.py
 data/
+state/
+servo_aligner.yaml
