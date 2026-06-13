@@ -1,0 +1,128 @@
+# servo_aligner machine configuration — copy and adapt per machine.
+#
+# The CLI finds this file via (in order):
+#   1. servo-aligner --config /path/to/file.yaml
+#   2. $SERVO_ALIGNER_CONFIG
+#   3. ./servo_aligner.yaml
+#
+# This example mirrors the rydpiservo production setup (8 servos, two beam
+# paths A/B, MCP3424 photodiode). See doc/migration.md for the mapping from
+# the legacy customize.py.
+
+state_dir: ~/servo_aligner/state   # servo position persistence (was HOME_FOLDER)
+data_dir: ~/servo_aligner/data     # scan / calibration outputs
+
+actuator:
+  backend: sts3032                 # sts3032 | simulation
+  board_id: 0
+  ports: [/dev/ttyUSB0, /dev/ttyUSB1, /dev/ttyUSB2]
+  # FEETECH factory default is 1000000; the legacy deployment ran 115200.
+  # Confirm against the deployed driver board before first use!
+  baudrate: 1000000
+  speed: 2000                      # was SERVO_SPEED
+  acc: 90                          # was SERVO_ACC
+  move_timeout_s: 10
+  de_hysteresis:
+    enabled: true
+    overshoot_counts: 100          # negative moves overshoot then return
+    threshold_counts: 2            # smaller deltas skip de-hysteresis
+  channels:                        # order defines the channel index (was sts3032_dict)
+    - {name: A_x,    servo_id: 3, label: "1x"}
+    - {name: A_y,    servo_id: 4, label: "1y"}
+    - {name: A_xdot, servo_id: 1, label: "2x"}
+    - {name: A_ydot, servo_id: 2, label: "2y"}
+    - {name: B_x,    servo_id: 5, label: "3x"}
+    - {name: B_y,    servo_id: 6, label: "3y"}
+    - {name: B_xdot, servo_id: 7, label: "4x"}
+    - {name: B_ydot, servo_id: 8, label: "4y"}
+
+sensor:
+  backend: mcp3424                 # mcp3424 | simulation
+  i2c_bus: 1
+  address: 0x68
+  channel: 0
+  gain: 1
+  resolution: 16
+  samples_per_read: 2              # readings averaged per measurement
+
+# Named channel groups (replace the legacy servo_const.py masks).
+# "*" selects all channels. NOTE: the B-path X_Y / XDOT_YDOT memberships are
+# mirrored relative to the A path — this matches the legacy masks faithfully
+# (long-standing wiring/naming quirk; do not "fix" without lab confirmation).
+groups:
+  A_X_XDOT:    [A_x, A_xdot]
+  A_Y_YDOT:    [A_y, A_ydot]
+  A_X_Y:       [A_x, A_y]
+  A_XDOT_YDOT: [A_xdot, A_ydot]
+  A_POS_ALL:   [A_x, A_y, A_xdot, A_ydot]
+  B_X_XDOT:    [B_x, B_xdot]
+  B_Y_YDOT:    [B_y, B_ydot]
+  B_X_Y:       [B_xdot, B_ydot]
+  B_XDOT_YDOT: [B_x, B_y]
+  B_POS_ALL:   [B_x, B_y, B_xdot, B_ydot]
+  ALL: "*"
+
+optimize:
+  accept_ratio: 0.7                # commit new zero only if I_now/I_best > this
+  default_bounds: [-100, 100]      # per-knob bounds (degrees)
+  spiral:                          # spiral-descent tuning (lab-validated)
+    I_meaningful: 0.005
+    D: 2.4
+    SPIRAL_RESOLUTION: 14
+    SPIRAL_SPAN: 6
+    SINGLE_SPIRAL_SPAN: 3.5
+    N_LOOPS_BEFORE_RESET_ORIGIN: 0.5
+    MAX_X0Y0_DISPLACEMENT: 10
+    COEF_I_RESET_ORIGIN: 1.4
+    alpha: 0.03
+    COEF_I_DECAY: 0.995
+  lbfgsb: {disp: true, maxiter: 10, eps: 5}
+
+clip_scan:
+  output_dir: "{data_dir}/clip_scan"
+  I_meaningful: 0.1                # min intensity to accept a new zero
+  accept_lines:                    # scan-point filter along the coupling line
+    A_X_XDOT: {slope: 1.35,  intercept: 0, tol: 80}
+    A_Y_YDOT: {slope: -1.36, intercept: 5, tol: 80}
+    B_X_XDOT: {slope: -0.67, intercept: 0, tol: 80}
+    B_Y_YDOT: {slope: -0.67, intercept: 5, tol: 80}
+  stages:                          # the per-iteration scan sequence
+    - {group: A_X_XDOT, n_pts: 50, range: 500, accept: true,  plot_type: 0}
+    - {group: A_Y_YDOT, n_pts: 50, range: 800, accept: true,  plot_type: 0}
+    - {group: A_X_Y,    n_pts: 15, range: 30,  accept: false, plot_type: 1}
+  iterations: [6]                  # iteration indices (used in output filenames)
+
+jacobian:
+  output_dir: "{data_dir}/jacobian"
+  paths: [A, B]
+  master: B                        # offset applied on this path; the other is optimized
+  offset_type: zero                # pm | rand | lin | zero | spec
+  norm: 20
+  n_iterations: 1
+  assumed_jacobian: null           # .npz with 'jac' (+ optional 'x0') to bootstrap
+  spec_offset: [3, 0, 0, 0]        # used when offset_type: spec
+  lin_comb_vectors:                # coupling directions per master path
+    A: [[1, 0, 1.35, 0], [0, 1, 0, -1.36]]
+    B: [[1, 0, -0.67, 0], [0, 1, 0, -0.67]]
+  stages:                          # optimization sequence on the non-master path
+    - {group_suffix: X_Y,     method: spiral, bounds: [-100, 100]}
+    - {group_suffix: X_XDOT,  method: spiral}
+    - {group_suffix: Y_YDOT,  method: spiral}
+    - {group_suffix: POS_ALL, method: L-BFGS-B}
+
+# Used when actuator/sensor backend is "simulation": the full alignment stack
+# runs hardware-free on a dev machine (see doc/simulation.md).
+simulation:
+  noise_rms: 1.0e-4
+  seed: null
+  smooth_transition: null          # set e.g. 0.3 for smoothed edges (test-only)
+  model: {}                        # BeamClipModel overrides: L, d, L1, L2, knob_pitch, crosstalk
+  paths:                           # which channel quadruple feeds each simulated beam
+    - {channels: [A_x, A_y, A_xdot, A_ydot], weight: 1.0}
+  true_zero: [0, 0, 0, 0, 0, 0, 0, 0]   # ground-truth misalignment (degrees)
+
+server:                            # expctl ZMQ adapter (requires the [server] extra)
+  name: STS1
+  port: 60627
+  de_hysteresis_on_start: true
+  sequence_module_aliases: [sequence]  # module names pickled payloads may use
