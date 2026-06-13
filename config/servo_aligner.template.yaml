@@ -1,0 +1,99 @@
+# servo_aligner machine config TEMPLATE.
+#
+# Copy this to your machine config and fill in the values marked FIXME:
+#   cp config/servo_aligner.template.yaml ~/servo_aligner.yaml
+#   export SERVO_ALIGNER_CONFIG=~/servo_aligner.yaml   # or pass -c per command
+#
+# This template keeps the structure terse; every key and its meaning is
+# documented in config/example_config.yaml. Sections you omit fall back to the
+# dataclass defaults in servo_aligner/config.py — but `actuator.channels` is
+# required, and clip-scan needs `groups` + `clip_scan.accept_lines`.
+
+state_dir: ~/servo_aligner/state    # where servos_<board>.json is persisted
+data_dir: ~/servo_aligner/data      # scan / calibration outputs
+
+actuator:
+  backend: sts3032                  # sts3032 (hardware) | simulation (dev/no hardware)
+  board_id: 0
+  ports: [/dev/ttyUSB0, /dev/ttyUSB1, /dev/ttyUSB2]
+  baudrate: 1000000                 # FIXME: confirm against your driver board (lab ran 115200)
+  speed: 2000
+  acc: 90
+  move_timeout_s: 10
+  de_hysteresis: {enabled: true, overshoot_counts: 100, threshold_counts: 2}
+  channels:                         # FIXME: one entry per channel; order = channel index
+    - {name: A_x,    servo_id: 3, label: "1x"}
+    - {name: A_y,    servo_id: 4, label: "1y"}
+    - {name: A_xdot, servo_id: 1, label: "2x"}
+    - {name: A_ydot, servo_id: 2, label: "2y"}
+    - {name: B_x,    servo_id: 5, label: "3x"}
+    - {name: B_y,    servo_id: 6, label: "3y"}
+    - {name: B_xdot, servo_id: 7, label: "4x"}
+    - {name: B_ydot, servo_id: 8, label: "4y"}
+
+sensor:
+  backend: mcp3424                  # mcp3424 (hardware) | simulation
+  i2c_bus: 1
+  address: 0x68
+  channel: 0
+  gain: 1
+  resolution: 16
+  samples_per_read: 2
+
+# Named channel groups used by the routines (replace the legacy masks).
+# Keep the mirrored B-path X_Y / XDOT_YDOT membership unless your wiring differs.
+groups:
+  A_X_XDOT:    [A_x, A_xdot]
+  A_Y_YDOT:    [A_y, A_ydot]
+  A_X_Y:       [A_x, A_y]
+  A_XDOT_YDOT: [A_xdot, A_ydot]
+  A_POS_ALL:   [A_x, A_y, A_xdot, A_ydot]
+  B_X_XDOT:    [B_x, B_xdot]
+  B_Y_YDOT:    [B_y, B_ydot]
+  B_X_Y:       [B_xdot, B_ydot]
+  B_XDOT_YDOT: [B_x, B_y]
+  B_POS_ALL:   [B_x, B_y, B_xdot, B_ydot]
+  ALL: "*"
+
+# --- Tuning below: defaults are the lab-validated values. Override only if you
+# --- know why. See config/example_config.yaml for the full annotated set.
+
+clip_scan:
+  output_dir: "{data_dir}/clip_scan"
+  I_meaningful: 0.1
+  accept_lines:                     # FIXME: per-group coupling line (slope/intercept/tol)
+    A_X_XDOT: {slope: 1.35,  intercept: 0, tol: 80}
+    A_Y_YDOT: {slope: -1.36, intercept: 5, tol: 80}
+    B_X_XDOT: {slope: -0.67, intercept: 0, tol: 80}
+    B_Y_YDOT: {slope: -0.67, intercept: 5, tol: 80}
+  stages:
+    - {group: A_X_XDOT, n_pts: 50, range: 500, accept: true,  plot_type: 0}
+    - {group: A_Y_YDOT, n_pts: 50, range: 800, accept: true,  plot_type: 0}
+    - {group: A_X_Y,    n_pts: 15, range: 30,  accept: false, plot_type: 1}
+  iterations: [0]
+
+jacobian:
+  output_dir: "{data_dir}/jacobian"
+  paths: [A, B]
+  master: B
+  offset_type: zero                 # pm | rand | lin | zero | spec
+  norm: 20
+  n_iterations: 1
+  assumed_jacobian: null
+  lin_comb_vectors:
+    A: [[1, 0, 1.35, 0], [0, 1, 0, -1.36]]
+    B: [[1, 0, -0.67, 0], [0, 1, 0, -0.67]]
+  stages:
+    - {group_suffix: X_Y,     method: spiral, bounds: [-100, 100]}
+    - {group_suffix: X_XDOT,  method: spiral}
+    - {group_suffix: Y_YDOT,  method: spiral}
+    - {group_suffix: POS_ALL, method: L-BFGS-B}
+
+# optimize: {}    # accept_ratio, default_bounds, spiral{}, lbfgsb{} — defaults are fine
+# simulation: {}  # only used when a backend is "simulation"; see example_config.yaml
+
+server:                             # only needed for `servo-aligner server` ([server] extra)
+  name: STS1
+  port: 60627
+  de_hysteresis_on_start: true
+  sequence_module_aliases: [sequence]

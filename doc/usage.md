@@ -14,7 +14,7 @@ pip install -e ".[dev]"                  # tests
 
 Nothing touches hardware at import time; motors only move on explicit CLI
 commands or API calls. The FEETECH serial SDK is vendored at
-`src/servo_aligner/scservo_sdk/` — nothing to install.
+`servo_aligner/scservo_sdk/` — nothing to install.
 
 Before first hardware run, set the servos' **Register 18 → 124** with the FD
 tool so they report multi-turn angle (see [motor.md](motor.md); the tool and

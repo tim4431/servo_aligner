@@ -2,8 +2,8 @@
 
 This note explains **why** we use a custom "spiral descent" search to maximize
 fiber coupling (and beam alignment generally), and **how** it is implemented in
-`src/servo_aligner/optimize/spiral.py` / `src/servo_aligner/optimize/iterate.py` /
-`src/servo_aligner/optimize/step.py`. How spiral
+`servo_aligner/optimize/spiral.py` / `servo_aligner/optimize/iterate.py` /
+`servo_aligner/optimize/step.py`. How spiral
 stages are chained into a full optimization round is described in
 [optimize.md](optimize.md).
 

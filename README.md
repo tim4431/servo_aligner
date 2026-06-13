@@ -31,11 +31,11 @@ pip install -e ".[dev]" && pytest
 
 | Path | Role |
 |------|------|
-| `src/servo_aligner/hal/` | Hardware abstraction: `Actuator`/`IntensitySensor` protocols; STS3032, MCP3424, and simulation backends |
-| `src/servo_aligner/optimize/`, `scan/` | The lab-validated algorithms: spiral descent, staged optimization, serpentine raster |
-| `src/servo_aligner/routines/` | Clip-scan and Jacobian-calibration procedures |
-| `src/servo_aligner/server/` | Optional ZMQ adapter for the expctl lab framework |
-| `src/servo_aligner/scservo_sdk/` | Vendored FEETECH serial SDK (do not edit) |
+| `servo_aligner/hal/` | Hardware abstraction: `Actuator`/`IntensitySensor` protocols; STS3032, MCP3424, and simulation backends |
+| `servo_aligner/optimize/`, `scan/` | The lab-validated algorithms: spiral descent, staged optimization, serpentine raster |
+| `servo_aligner/routines/` | Clip-scan and Jacobian-calibration procedures |
+| `servo_aligner/server/` | Optional ZMQ adapter for the expctl lab framework |
+| `servo_aligner/scservo_sdk/` | Vendored FEETECH serial SDK (do not edit) |
 | `config/example_config.yaml` | Fully commented machine config template |
 | `tests/` | Hardware-free suite incl. golden-value parity with the pre-refactor code |
 

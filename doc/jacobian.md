@@ -2,7 +2,7 @@
 
 This note explains **what** the Jacobian means for our mirror mounts, **why** we
 calibrate it numerically instead of from geometry, and **how** the calibration
-in `src/servo_aligner/routines/calibrate_jacobian.py` works.
+in `servo_aligner/routines/calibrate_jacobian.py` works.
 
 ## The setup: forward and backward paths, overlapped
 
@@ -38,7 +38,7 @@ $$
 Once $J$ is known, you can drive the master knobs freely and have the slave
 knobs **follow automatically** to preserve coupling — no re-optimization needed.
 
-> In code this is exactly what [`compose_para`](../src/servo_aligner/vectors.py) does: given a
+> In code this is exactly what [`compose_para`](../servo_aligner/vectors.py) does: given a
 master move `dA` it sets the slave knobs by `dB = J·(dA − offset)`, where `jac_master_mask` selects which channels are the masters. The
 [staged spiral/L-BFGS optimization](optimize.md) is what finds the optimal $B$ for each imposed $A$ during calibration.
 

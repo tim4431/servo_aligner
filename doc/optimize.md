@@ -7,8 +7,8 @@ into a full optimization round** over one beam path's four knobs
 full **4D L-BFGS-B** polish at the end. These are ingredients **C** (iterate
 between pairs of knobs) and **D** (finish with a gradient step) from the
 developer notes; the staging is implemented in
-[`routines/calibrate_jacobian.py`](../src/servo_aligner/routines/calibrate_jacobian.py) via
-[`step_optimize`](../src/servo_aligner/optimize/step.py).
+[`routines/calibrate_jacobian.py`](../servo_aligner/routines/calibrate_jacobian.py) via
+[`step_optimize`](../servo_aligner/optimize/step.py).
 
 ## Why 2D pairs instead of all four knobs at once?
 

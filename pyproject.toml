@@ -26,7 +26,7 @@ dev = ["pytest", "matplotlib"]
 servo-aligner = "servo_aligner.cli.main:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
 include = ["servo_aligner*"]
 
 [tool.pytest.ini_options]

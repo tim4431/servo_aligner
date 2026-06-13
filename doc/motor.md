@@ -35,7 +35,7 @@ A knob often needs **more than one turn**. There are two ways to track it:
 1. **Software turn counting** (default fallback) — `Sts3032Servo` watches for
    large jumps in the raw 0–4095 reading (a wrap from ~4095→0 or back) and
    increments an internal `turn_num`, so `angle_current = raw + 4096 * turn_num`.
-   See `Sts3032Servo.set_position` in `src/servo_aligner/hal/sts3032.py`.
+   See `Sts3032Servo.set_position` in `servo_aligner/hal/sts3032.py`.
 2. **Hardware multi-turn reporting** — set **Register 18** as below; the servo
    then reports the full multi-turn angle directly. This is more robust and is
    the recommended setup.
@@ -78,7 +78,7 @@ Set the **min and max position limits to `0, 0`** (not `0, 4095`):
 
 ## Control-table registers used by the driver
 
-`src/servo_aligner/hal/sts3032.py` reads/writes these addresses (STS control table):
+`servo_aligner/hal/sts3032.py` reads/writes these addresses (STS control table):
 
 | Addr | Name | Used for |
 |-----:|------|----------|
@@ -101,7 +101,7 @@ The **3D-printed** mirror-mount frame is **not perfectly rigid**, and the coupli
 
 ### The fix: always approach from the same side
 
-`Sts3032Actuator.set_positions` (`src/servo_aligner/hal/sts3032.py`) makes every
+`Sts3032Actuator.set_positions` (`servo_aligner/hal/sts3032.py`) makes every
 final approach come from the **+** direction, so backlash is always taken up the
 same way. For each servo it compares the goal to the current position:
 
