@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from .channels import ChannelLayout
 from .config import Config
 from .hal.interfaces import Actuator, IntensitySensor
+from .measurement import Measurement
 
 
 @dataclass
@@ -22,6 +23,7 @@ class AlignerStack:
     layout: ChannelLayout
     actuator: Actuator
     sensor: IntensitySensor
+    measurement: Measurement
 
     def close(self) -> None:
         self.actuator.close()
@@ -75,5 +77,9 @@ def build_stack(cfg: Config) -> AlignerStack:
     actuator = build_actuator(cfg)
     sensor = build_sensor(cfg, actuator)
     return AlignerStack(
-        config=cfg, layout=cfg.layout(), actuator=actuator, sensor=sensor
+        config=cfg,
+        layout=cfg.layout(),
+        actuator=actuator,
+        sensor=sensor,
+        measurement=Measurement(actuator, sensor),
     )
