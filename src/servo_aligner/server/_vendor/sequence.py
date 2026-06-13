@@ -1,3 +1,7 @@
+# Vendored from the expctl lab framework so that pickled Sequence payloads
+# can be unpickled by the ZMQ server. Requires expctl's `utilities` package
+# to be importable at runtime (i.e. running inside an expctl environment).
+# DO NOT EDIT — keep in sync with upstream expctl.
 from utilities.util import *
 try:
   import matplotlib.pyplot as plt
