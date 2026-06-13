@@ -3,7 +3,7 @@
 The two end-to-end procedures the aligner exists for:
 
 1. **Center a beam on the cavity axis** — using the clip-scan / sigmoid-ellipse
-   method (`clip_scan.py`).
+   method (`servo-aligner clip-scan`).
 2. **Align the MOT with the lattice** — using the calibrated
    [Jacobian](jacobian.md) to keep the lattice through the MOT while walking to
    the trap.
@@ -30,11 +30,13 @@ bore length); off-axis rays clip sooner, so the transmitting region is an
 
 ![Clip geometry: aperture d over length L gives Δθ=d/L; the transmitting region is a tilted ellipse fit with a sigmoid](figs/clip_scan_geometry_sigmoid_ellipse.jpg)
 
-### The scan (`clip_scan.py`)
+### The scan (`routines/clip_scan.py`, run via `servo-aligner clip-scan`)
 
-`scan_and_analyze` runs a **2D raster** over a knob pair (`motor_2d_scan`,
-boustrophedon/zig-zag order to minimize motor travel), reading the photodiode at
-each point. An optional **accept function** skips grid points far outside the
+`scan_and_analyze` runs a **2D raster** over a knob pair (`raster_2d` in
+`servo_aligner/scan/raster.py`, boustrophedon/zig-zag order to minimize motor
+travel), reading the photodiode at
+each point. An optional **accept function** (configured as `clip_scan.accept_lines`
+in the YAML) skips grid points far outside the
 expected diagonal band, so the scan spends its time where the signal is.
 
 The transmitting plateau is fit with a **smooth-Heaviside (sigmoid) ellipse**
@@ -45,9 +47,9 @@ I(\mathbf{x}) \;=\; A\;\operatorname{erfc}\!\Big(\frac{\mathbf{x}^\top\Sigma^{-1
 $$
 
 (`gaussian_2d_smooth_heaviside` / `fit_gaussian_2d_smooth_heaviside` in
-`fit_gaussian.py`). The fit returns the **center `mu`** (the aligned knob
+`servo_aligner/fitting.py`). The fit returns the **center `mu`** (the aligned knob
 setting) and the covariance `Sigma` (orientation/size of the transmitting
-region). `clip_scan.py` then drives the knobs to `mu` and, if the intensity
+region). The clip-scan routine then drives the knobs to `mu` and, if the intensity
 there is meaningful, adopts it as the new `zero`.
 
 Iterate this between knob pairs (`X_XDOT`, `Y_YDOT`, then a small `X_Y`) to walk
@@ -74,7 +76,7 @@ $$
 \text{skewness} \;\propto\; \frac{\langle (x-\bar x)^3\rangle}{\langle (x-\bar x)^2\rangle^{3/2}},
 $$
 
-implemented in `statistics_skewness` (`fit_gaussian.py`). **Why it matters:** the
+implemented in `statistics_skewness` (`servo_aligner/fitting.py`). **Why it matters:** the
 fat tail **biases the ellipse fit**, which pulls the extracted center off and can
 stop the iterate-between-pairs loop from converging. The
 [numeric simulation](simulation.md) reproduces this: a *centered, constant* XY

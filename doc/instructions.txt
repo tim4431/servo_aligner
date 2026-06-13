@@ -1,3 +1,4 @@
-python -m expctl.servers.servoaligner.calibrate_jacobian
-python -m expctl.servers.servoaligner.clip_scan
-nohup python -m expctl.servers.servoaligner.clip_scan > clip_cooldown_20241117.log 2>&1 &
+# quick command crib sheet (see usage.md / migration.md for details)
+servo-aligner calibrate-jacobian
+servo-aligner clip-scan
+nohup servo-aligner clip-scan --no-plot > clip_$(date +%Y%m%d).log 2>&1 &

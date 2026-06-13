@@ -2,7 +2,7 @@
 
 This note explains **what** the Jacobian means for our mirror mounts, **why** we
 calibrate it numerically instead of from geometry, and **how** the calibration
-in `src/calibrate_jacobian.py` works.
+in `src/servo_aligner/routines/calibrate_jacobian.py` works.
 
 ## The setup: forward and backward paths, overlapped
 
@@ -38,7 +38,7 @@ $$
 Once $J$ is known, you can drive the master knobs freely and have the slave
 knobs **follow automatically** to preserve coupling — no re-optimization needed.
 
-> In code this is exactly what [`compose_para`](../src/servo_util.py) does: given a
+> In code this is exactly what [`compose_para`](../src/servo_aligner/vectors.py) does: given a
 master move `dA` it sets the slave knobs by `dB = J·(dA − offset)`, where `jac_master_mask` selects which channels are the masters. The
 [staged spiral/L-BFGS optimization](optimize.md) is what finds the optimal $B$ for each imposed $A$ during calibration.
 
@@ -54,18 +54,20 @@ version instead because:
 
 
 
-## How to calibrate the Jacobian (`calibrate_jacobian.py`)
+## How to calibrate the Jacobian (`servo-aligner calibrate-jacobian`)
 
 The core loop turns the physics statement *"for any master setting $A$, find the slave setting $B$ that maximizes coupling"* into data:
 
 1. **Impose a master offset.** Choose an offset vector for the master path's
    knobs. The offset *type* is selectable:
-   - `pm`  — push one knob by ±`normd` (coordinate directions),
-   - `rand` — a random unit direction scaled to `normd`,
-   - `lin` — a random combination of known coupling directions (`vecs`),
+   - `pm`  — push one knob by ±`jacobian.norm` (coordinate directions),
+   - `rand` — a random unit direction scaled to `jacobian.norm`,
+   - `lin` — a random combination of known coupling directions
+     (`jacobian.lin_comb_vectors`),
    - `zero` — no offset (re-optimize in place).
 2. **Optimize the slave path.** With the master held at the imposed offset, run the staged [spiral + L-BFGS-B optimization](optimize.md) over the slave knobs to maximize the objective function (for example fiber coupling efficiency). The result yields the optimal slave knob positions for that master offset.
-3. **Record the pair.** into the dataset (`jacobian_<type>_<normd>.npy`).
+3. **Record the pair.** into the dataset (`jacobian_<type>_<norm>.npy` under
+   `jacobian.output_dir`).
 4. **Repeat** over many offsets / directions to build up a cloud of
    $(\Delta A, \Delta B)$ pairs, then **least-squares fit** $J$ from
    $\Delta B = J\,\Delta A$ (the fit itself is done in the analysis notebooks).
@@ -81,7 +83,7 @@ like:
 
 ### `compose_para` — where the Jacobian is applied
 
-`compose_para` (`servo_util.py`) builds the full 8-channel angle command:
+`compose_para` (`servo_aligner/vectors.py`) builds the full 8-channel angle command:
 
 1. Start from `zero`, add the reduced step `para` on the masked channels
    (`nraddr`).
@@ -95,44 +97,46 @@ used, both to **calibrate** and later to **apply** `J`.
 
 ### One calibration sample
 
-For each sample `i` the script does:
+For each sample `i` the routine does (with `jacobian.master: B`):
 
 ```python
-MASTER = "B"                                   # B is held at the offset; A is optimized
-offset_mask = B_POS_ALL_MASK                   # the master channels
-offset = cord_pm_offset(...)                   # or random_norm_offset / lin_comb_offset / zeros
+from servo_aligner.optimize.step import step_optimize
+
+# groups come from the YAML config: layout = cfg.layout()
+offset_mask = list(layout.group("B_POS_ALL").mask)   # B is held at the offset; A is optimized
+offset = cord_pm_offset(...)                         # or random_norm_offset / lin_comb_offset / zeros
 
 # impose the master offset (and apply an assumed J to the slaves, if any)
 zero = compose_para(para=offset, pos_mask=offset_mask, zero=zero,
                     jac=jac_assume, jac_master_mask=offset_mask, jac_x0=jac_x0)
 
 # optimize the slave path on top of that origin (staged: see optimize.md)
-zero = step_optimize(servos, callback_func, pos_mask=A_X_Y_MASK,  zero=zero, bounds_single=(-100,100))
-zero = step_optimize(servos, callback_func, pos_mask=A_X_XDOT_MASK, zero=zero)               # spiral
-zero = step_optimize(servos, callback_func, pos_mask=A_Y_YDOT_MASK, zero=zero)               # spiral
-zero = step_optimize(servos, callback_func, pos_mask=A_POS_ALL_MASK, zero=zero, method='L-BFGS-B')
+zero = step_optimize(measurement, layout.group("A_X_Y"),     zero, opt=cfg.optimize, bounds_single=(-100, 100))
+zero = step_optimize(measurement, layout.group("A_X_XDOT"),  zero, opt=cfg.optimize)                  # spiral
+zero = step_optimize(measurement, layout.group("A_Y_YDOT"),  zero, opt=cfg.optimize)                  # spiral
+zero = step_optimize(measurement, layout.group("A_POS_ALL"), zero, opt=cfg.optimize, method='L-BFGS-B')
 
-_, I = callback_func(zero, pos_mask=POS_ALL_MASK)        # final intensity
-dataset[tuple(offset)].append((list(zero), I))          # record (offset → optimal slaves)
+_, I = measurement.measure(list(zero), layout.all)   # final intensity
+dataset[tuple(offset)].append((list(zero), I))       # record (offset → optimal slaves)
 np.save(filename, dataset)
 ```
 
-`step_optimize` runs one stage via `pts_iterator` (spiral / L-BFGS-B / Powell)
+`step_optimize` runs one stage via `iterate_points` (spiral / L-BFGS-B / Powell)
 and **only commits the new origin if the final intensity stays ≥ 70 % of the best
-seen** — see [optimize.md](optimize.md).
+seen** (`optimize.accept_ratio`) — see [optimize.md](optimize.md).
 
 ### Knobs to set before running
 
-Near the top of the `for i in range(N)` loop:
+In the YAML config (`jacobian:` section of `config/example_config.yaml`):
 
-| Variable | Meaning |
+| Config key | Meaning |
 |----------|---------|
-| `MASTER` | `"A"` or `"B"` — which path is held at the offset (the other is optimized). |
-| `offset_type` | `'pm'` (coordinate ±), `'rand'` (random unit), `'lin'` (combination of known coupling vectors), `'zero'` (re-optimize in place). |
-| `normd` | Offset magnitude (the master step size; grow it for [extrapolation](#extrapolation-bootstrapping-from-small-to-large-steps)). |
-| `N` | Number of samples to collect. |
-| `jac_assume` / `jac_x0` | A previously-fit `J` to predict slave starts (currently set to `None`). |
-| `filename` | `jacobian_<type>_<normd>.npy` — the accumulated dataset; the **matrix fit** `ΔB = J·ΔA` is done afterward in the analysis notebooks. |
+| `jacobian.master` | `A` or `B` — which path is held at the offset (the other is optimized). |
+| `jacobian.offset_type` | `pm` (coordinate ±), `rand` (random unit), `lin` (combination of known coupling vectors), `zero` (re-optimize in place). |
+| `jacobian.norm` | Offset magnitude (the master step size; grow it for [extrapolation](#extrapolation-bootstrapping-from-small-to-large-steps)). |
+| `jacobian.n_iterations` | Number of samples to collect. |
+| `jacobian.assumed_jacobian` | A previously-fit `J` (`.npz` with `jac` + optional `x0`) to predict slave starts (default `null`). |
+| `jacobian.output_dir` | Where `jacobian_<type>_<norm>.npy` — the accumulated dataset — is written; the **matrix fit** `ΔB = J·ΔA` is done afterward in the analysis notebooks. |
 
 ## Extrapolation: bootstrapping from small to large steps
 
@@ -174,8 +178,9 @@ the calibrated coupling and fits the clip center `mu` at each step:
 ```python
 for i in range(-2, 4):
     zero = np.array([0, 0, 0, 0, 0, 100*i, 0, -67*i])   # step along the Y↔Ydot coupling (≈ -0.67)
-    X, Y, Z = motor_2d_scan(N_pts, SCAN_RANGE, servos, cf, accept_func=accept_func_BXXDOT)
-    mu = popt_get_mu_cov(fit_and_plot_smooth_heaviside(X, Y, Z))   # extracted clip center
+    scan = raster_2d(measurement.objective(layout.group("B_X_XDOT"), zero=zero),
+                     n_pts, scan_range, accept_func=accept_func)   # accept line from clip_scan.accept_lines
+    mu = popt_get_mu_cov(fit_gaussian_2d_smooth_heaviside(scan.X, scan.Y, scan.Z))   # extracted clip center
 ```
 
 **More calibration data ⇒ a flatter region.** A `J` fit from `pm10` data alone

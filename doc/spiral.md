@@ -2,7 +2,8 @@
 
 This note explains **why** we use a custom "spiral descent" search to maximize
 fiber coupling (and beam alignment generally), and **how** it is implemented in
-`src/spiral.py` / `src/pts_iterator.py` / `src/step_optimize.py`. How spiral
+`src/servo_aligner/optimize/spiral.py` / `src/servo_aligner/optimize/iterate.py` /
+`src/servo_aligner/optimize/step.py`. How spiral
 stages are chained into a full optimization round is described in
 [optimize.md](optimize.md).
 
@@ -58,7 +59,7 @@ Two further ingredients — **C** (iterate between 2D knob pairs) and **D**
 *chained* into a full optimization round, not the spiral itself; see
 [optimize.md](optimize.md).
 
-## How the spiral works (`SpiralPath` in `spiral.py`)
+## How the spiral works (`SpiralPath` in `optimize/spiral.py`)
 
 Per step (`step_rdxy` → sample → `step_x0y0`):
 
@@ -82,23 +83,26 @@ Per step (`step_rdxy` → sample → `step_x0y0`):
    spiral there (`I_max` decays by `COEF_I_DECAY` so the bar isn't permanent).
 
 The search stops after `SPIRAL_RESOLUTION · SPIRAL_SPAN` iterations. The spiral
-is **2D only** — `pts_iterator` asserts `N_var == 2` for `method="spiral"`.
+is **2D only** — `iterate_points` asserts `n_var == 2` for `method="spiral"`.
 
-Tuned parameters live in `step_optimize.py` (`spiral_params`): `I_meaningful`,
-`D`, `SPIRAL_RESOLUTION`, `SPIRAL_SPAN`, `COEF_I_RESET_ORIGIN`, `alpha`, …
+Tuned parameters live in the YAML config under `optimize.spiral` (see
+`config/example_config.yaml`): `I_meaningful`, `D`, `SPIRAL_RESOLUTION`,
+`SPIRAL_SPAN`, `COEF_I_RESET_ORIGIN`, `alpha`, …
 
 ## Where it all plugs together
 
-- **`spiral.py` — `SpiralPath`**: the spiral-descent algorithm itself
-  (`maximize(function, x0, bounds, options)`). Has a hardware-free matplotlib
-  demo under `__main__` (maximizes a tilted 2D Gaussian) — the only way to see
-  the algorithm run off the Pi.
-- **`pts_iterator.py` — `pts_iterator`**: dispatches to `"spiral"`,
-  `"L-BFGS-B"`, or `"Powell"`, records every `(para, intensity)` sample, and
-  plots the trace + convergence curve.
-- **`step_optimize.py` — `step_optimize`**: runs one optimization stage on a
-  given `pos_mask`, then **only commits the new origin if the final intensity
-  stays ≥ 70 % of the best seen** (guards against ending on a bad/noisy point).
+- **`optimize/spiral.py` — `SpiralPath`**: the spiral-descent algorithm itself
+  (`maximize(function, x0, bounds, options)`). The seeded hardware-free demo
+  objective (a tilted 2D Gaussian) lives in `tests/test_spiral.py`; the
+  `backend: simulation` mode in the YAML config runs the whole stack off the Pi.
+- **`optimize/iterate.py` — `iterate_points`**: dispatches to `"spiral"`,
+  `"L-BFGS-B"`, or `"Powell"` and records every `(para, intensity)` sample into
+  an `OptimizationTrace`; the trace + convergence curve are plotted via
+  `servo_aligner/plotting.py`.
+- **`optimize/step.py` — `step_optimize`**: runs one optimization stage on a
+  given channel group, then **only commits the new origin if the final intensity
+  stays ≥ 70 % of the best seen** (`optimize.accept_ratio`; guards against
+  ending on a bad/noisy point).
 
 How these stages are chained into a full optimization round — spiral passes on
 each coupled 2D knob-pair subspace, then a 4D **L-BFGS-B** finish — is

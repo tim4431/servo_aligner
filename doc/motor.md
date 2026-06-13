@@ -10,8 +10,8 @@ Raspberry Pi  →  URT / serial driver board  →  servo 1 → servo 2 → … (
 ```
 
 Servos share one serial bus and are addressed by **ID** (not by position on the
-chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in
-`customize.py` (`sts3032_dict`).
+chain). The Pi-side mapping of *channel index → servo ID/name* lives in the
+YAML machine config (`actuator.channels`; template `config/example_config.yaml`).
 
 Default bus settings: **baudrate 1 000 000**,
 
@@ -32,10 +32,10 @@ So one encoder step ≈ 0.088°, and one full knob turn = 4096 steps.
 
 A knob often needs **more than one turn**. There are two ways to track it:
 
-1. **Software turn counting** (default fallback) — `Servoset` watches for large
-   jumps in the raw 0–4095 reading (a wrap from ~4095→0 or back) and increments
-   an internal `turn_num`, so `angle_current = raw + 4096 * turn_num`. See
-   `sts3032.set_position` in `src/servodriver.py`.
+1. **Software turn counting** (default fallback) — `Sts3032Servo` watches for
+   large jumps in the raw 0–4095 reading (a wrap from ~4095→0 or back) and
+   increments an internal `turn_num`, so `angle_current = raw + 4096 * turn_num`.
+   See `Sts3032Servo.set_position` in `src/servo_aligner/hal/sts3032.py`.
 2. **Hardware multi-turn reporting** — set **Register 18** as below; the servo
    then reports the full multi-turn angle directly. This is more robust and is
    the recommended setup.
@@ -78,19 +78,19 @@ Set the **min and max position limits to `0, 0`** (not `0, 4095`):
 
 ## Control-table registers used by the driver
 
-`src/servodriver.py` reads/writes these addresses (STS control table):
+`src/servo_aligner/hal/sts3032.py` reads/writes these addresses (STS control table):
 
 | Addr | Name | Used for |
 |-----:|------|----------|
 | 40 | `TORQUE_ENABLE`    | `1` enable, `0` disable torque. Writing **`128`** triggers the **set-zero / mid-point calibration** (`set_zero`). |
-| 41 | `GOAL_ACC`         | Goal acceleration (`SERVO_ACC` from `customize.py`). |
+| 41 | `GOAL_ACC`         | Goal acceleration (`actuator.acc` from the YAML config). |
 | 42 | `GOAL_POSITION`    | Target position (written via group-sync-write for all servos at once). |
-| 46 | `GOAL_SPEED`       | Goal speed (`SERVO_SPEED` from `customize.py`). |
+| 46 | `GOAL_SPEED`       | Goal speed (`actuator.speed` from the YAML config). |
 | 56 | `PRESENT_POSITION` | Current position (group-sync-read; basis for turn counting). |
 | 66 | `MOVING_STATUS`    | `0` when the servo has stopped — used to know a move finished. |
 
-Speed/acceleration defaults come from `customize.py` (`SERVO_SPEED`,
-`SERVO_ACC`); per-servo overrides are possible via `set_speed` / `set_acc`.
+Speed/acceleration defaults come from the YAML config (`actuator.speed`,
+`actuator.acc`); per-servo overrides are possible via `set_speed` / `set_acc`.
 
 ## De-hysteresis (backlash compensation)
 
@@ -101,23 +101,25 @@ The **3D-printed** mirror-mount frame is **not perfectly rigid**, and the coupli
 
 ### The fix: always approach from the same side
 
-`Servoset.set_position` (`src/servodriver.py`) makes every final approach come
-from the **+** direction, so backlash is always taken up the same way. For each
-servo it compares the goal to the current position:
+`Sts3032Actuator.set_positions` (`src/servo_aligner/hal/sts3032.py`) makes every
+final approach come from the **+** direction, so backlash is always taken up the
+same way. For each servo it compares the goal to the current position:
 
-- **Moving `+` (or by ≤ `POS_THRESHOLD = 2` encoder steps):** go straight to the
-  goal.
-- **Moving `−` by more than `POS_THRESHOLD`:** first **overshoot to
-  `goal − 100`** encoder steps, then move **up** to the goal — so the knob always
+- **Moving `+` (or by ≤ `actuator.de_hysteresis.threshold_counts = 2` encoder
+  steps):** go straight to the goal.
+- **Moving `−` by more than the threshold:** first **overshoot to
+  `goal − 100`** encoder steps (`actuator.de_hysteresis.overshoot_counts`), then
+  move **up** to the goal — so the knob always
   settles while turning in the `+` direction.
 
 
 ### Toggling it
 
-- `servos.de_hysterisis` — `True` by default (set in `Servoset.__init__`).
-- CLI: the `dehys 0|1` subcommand (`STSServer.set_dehys_args`).
+- `actuator.de_hysteresis.enabled` in the YAML config — `true` by default; at
+  runtime it is the `de_hysteresis` attribute on `Sts3032Actuator`.
+- CLI: `servo-aligner server --dehys 0|1`.
 - It is a **speed/accuracy trade-off**: each negative move becomes *two* physical
-  moves. `calibrate_jacobian.py` runs with it **on** (accuracy matters);
-  `clip_scan.py` runs with it **off** (a long raster scan where speed wins).
-  Turn it on whenever calibration accuracy matters.
+  moves. `servo-aligner calibrate-jacobian` runs with it **on** (accuracy
+  matters); `servo-aligner clip-scan` runs with it **off** (a long raster scan
+  where speed wins). Turn it on whenever calibration accuracy matters.
 

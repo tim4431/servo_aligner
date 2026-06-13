@@ -3,17 +3,19 @@
 Two hardware-free simulations support the design and let you run things off the
 Pi:
 
-1. **A geometric clipping model** (`numeric_sim.py`) — predicts the shape of the
+1. **A geometric clipping model** (`servo_aligner/sim/beam_model.py`) — predicts
+   the shape of the
    transmitting "clip" region under different XY-coupling assumptions, and
    explains the [fat-tail](application.md) distortion and when the
    iterate-between-pairs alignment converges.
-2. **An optimizer test bed** (`spiral.py` `__main__`) — runs the
+2. **An optimizer test bed** (`tests/test_spiral.py` and the
+   `backend: simulation` mode in the YAML config) — runs the
    [spiral descent](spiral.md) against a synthetic 2D objective so the algorithm
    can be developed without motors.
 
 Both are pure NumPy/Matplotlib and safe to import/run anywhere.
 
-## 1. The geometric clipping model (`numeric_sim.py`)
+## 1. The geometric clipping model (`sim/beam_model.py`)
 
 ### What it models
 
@@ -30,9 +32,10 @@ transmission = W(|x_front| < d/2) · W(|x_back| < d/2)
 ```
 
 where `t1, t2` are the two mirror tilts and `W` is a top-hat window. The actual
-implementation (`calc_data`, `f`, `g`, `theta`) does this in 2D — it windows
+implementation (`calc_data` and `BeamClipModel.g`) does this in 2D — it windows
 `sqrt(x₁²+y₁²)` and `sqrt(x₂²+y₂²)` against the circular bore — and converts knob
-angle → mirror tilt with `t_mirror`. Geometry constants at the top of the file:
+angle → mirror tilt with `t_mirror`. Geometry constants are the `BeamClipModel`
+constructor defaults:
 `L = 16 mm`, `d = 1.4 mm`, `L1 = 0.2 m`, `L2 = 0.2·2.35 m`.
 
 ### XY coupling = the crosstalk matrix
@@ -92,26 +95,32 @@ coupling rotates with knob angle, so the optimum must be tracked
 ([spiral](spiral.md)) and the cross-coupling measured ([Jacobian](jacobian.md))
 rather than assumed constant.
 
-> The model lives at module top level (`numeric_sim.py` runs `calc_data` on
-> import and calls `plt.show()`); adjust `crosstalk_matrix`, `zero`, and
-> `scan_type` there to explore. `example/notebooks/numeric_sim.ipynb` is the
+> The module no longer runs a scan at import — call
+> `calc_data(crosstalk_matrix, zero, scan_type=...)` explicitly, adjusting
+> `crosstalk_matrix`, `zero`, and
+> `scan_type` to explore. `example/notebooks/numeric_sim.ipynb` is the
 > interactive version.
 
-## 2. Optimizer test bed (`spiral.py`)
+## 2. Optimizer test bed (`tests/test_spiral.py` + the simulation backend)
 
-`spiral.py`'s `__main__` block builds a tilted 2D Gaussian
-(`gaussian2d` / `covariance_matrix`) and runs `SpiralPath.maximize` against it,
-plotting the space-filling spiral path and the dragged `(x0, y0)` center. This is
+The old `python spiral.py` matplotlib demo is gone; its seeded demo objective —
+a tilted 2D Gaussian
+(`noisy_gaussian2d` / `covariance_matrix`) — lives in `tests/test_spiral.py`,
+which runs `SpiralPath.maximize` against it (and pins the exact legacy
+trajectory). For hardware-free runs of the full stack — including the
+space-filling spiral path and the dragged `(x0, y0)` center, plotted via
+`servo_aligner/plotting.py` — set `backend: simulation` in the YAML config. This is
 how the [spiral-descent](spiral.md) parameters (`SPIRAL_RESOLUTION`, `D`,
-`alpha`, `COEF_I_RESET_ORIGIN`, …) are tuned without touching hardware:
+`alpha`, `COEF_I_RESET_ORIGIN`, … — the YAML `optimize.spiral` section) are
+tuned without touching hardware:
 
 ```bash
-python spiral.py        # from src/ — no servos needed
+pytest tests/test_spiral.py        # no servos needed
 ```
 
-The shared fitting helpers it exercises (`gaussian_2d`,
+The shared fitting helpers (`gaussian_2d`,
 `gaussian_2d_smooth_heaviside`, `fit_gaussian_2d*`, `statistics_skewness`) live in
-`fit_gaussian.py` and are the same ones used to fit real
+`servo_aligner/fitting.py` and are the same ones used to fit real
 [clip scans](application.md), so a fit validated in simulation behaves the same
 on measured data.
 

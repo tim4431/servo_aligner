@@ -7,12 +7,12 @@ into a full optimization round** over one beam path's four knobs
 full **4D L-BFGS-B** polish at the end. These are ingredients **C** (iterate
 between pairs of knobs) and **D** (finish with a gradient step) from the
 developer notes; the staging is implemented in
-[`calibrate_jacobian.py`](../src/calibrate_jacobian.py) via
-[`step_optimize`](../src/step_optimize.py).
+[`routines/calibrate_jacobian.py`](../src/servo_aligner/routines/calibrate_jacobian.py) via
+[`step_optimize`](../src/servo_aligner/optimize/step.py).
 
 ## Why 2D pairs instead of all four knobs at once?
 
-- **The spiral is 2D-only.** `pts_iterator` asserts `N_var == 2` for
+- **The spiral is 2D-only.** `iterate_points` asserts `n_var == 2` for
   `method="spiral"` — a space-filling spiral has no useful high-dimensional
   analogue: the number of samples (= motor travel) needed to "fill" the space
   explodes with dimension.
@@ -39,19 +39,22 @@ Left panel: visited points colored by intensity, with the dragged `(x0, y0)`
 center trajectory; right panel: intensity vs iteration. Across passes the
 visited cloud contracts toward the bright region.
 
-## The staged round in code (`calibrate_jacobian.py`)
+## The staged round in code (`routines/calibrate_jacobian.py`)
 
 One full round chains four `step_optimize` stages, threading the running
 origin `zero` (a full 8-channel angle vector) from each stage into the next:
 
 ```python
+from servo_aligner.optimize.step import step_optimize
+
+# groups come from the YAML config: layout = cfg.layout()
 # 1. coarse centering: spiral on the two position knobs, wide bounds
-zero = step_optimize(servos, callback_func, pos_mask=A_X_Y_MASK,    zero=zero, bounds_single=(-100, 100))
+zero = step_optimize(measurement, layout.group("A_X_Y"),     zero, opt=cfg.optimize, bounds_single=(-100, 100))
 # 2.–3. spiral in each coupled 2D subspace
-zero = step_optimize(servos, callback_func, pos_mask=A_X_XDOT_MASK, zero=zero)
-zero = step_optimize(servos, callback_func, pos_mask=A_Y_YDOT_MASK, zero=zero)
+zero = step_optimize(measurement, layout.group("A_X_XDOT"),  zero, opt=cfg.optimize)
+zero = step_optimize(measurement, layout.group("A_Y_YDOT"),  zero, opt=cfg.optimize)
 # 4. full 4D gradient finish over all four knobs of the path
-zero = step_optimize(servos, callback_func, pos_mask=A_POS_ALL_MASK, zero=zero, method='L-BFGS-B')
+zero = step_optimize(measurement, layout.group("A_POS_ALL"), zero, opt=cfg.optimize, method='L-BFGS-B')
 ```
 
 1. **Coarse centering (spiral on `X_Y`).** Search the two *position* knobs
@@ -65,11 +68,11 @@ zero = step_optimize(servos, callback_func, pos_mask=A_POS_ALL_MASK, zero=zero, 
    done its job.)
 4. **4D polish (`POS_ALL`, L-BFGS-B).** Once the spirals have found the basin,
    a short gradient search over all four knobs simultaneously (ingredient D;
-   `BFGS_params`: `maxiter=10`, `eps=5`) tightens the optimum across the
+   `optimize.lbfgsb`: `maxiter=10`, `eps=5`) tightens the optimum across the
    pair-to-pair coupling the 2D stages can't see.
 
-During [Jacobian calibration](jacobian.md) the masks actually select the
-**slave** path (the `B_*` masks when `MASTER == "A"` and vice versa): the
+During [Jacobian calibration](jacobian.md) the groups actually select the
+**slave** path (the `B_*` groups when `jacobian.master` is `A` and vice versa): the
 master path is held at an imposed offset while the slave path is re-optimized,
 and the resulting `zero` is recorded as one `(offset → optimal slaves)`
 calibration point.
@@ -77,18 +80,20 @@ calibration point.
 ## How a stage commits (`step_optimize`)
 
 Each stage optimizes a *reduced* parameter vector — only the knobs selected by
-its `pos_mask` — on top of the current `zero`; `callback_func` composes the
-full angle command, moves the servos, and reads the photodiode (see
-[spiral.md](spiral.md)). After the search, the stage re-measures at the
+its channel group — on top of the current `zero`; `Measurement.objective`
+composes the full angle command, moves the servos, and reads the photodiode
+(see [spiral.md](spiral.md)). After the search, the stage re-measures at the
 proposed optimum and **only commits the new origin if that intensity stays
-≥ 70 % of the best seen during the stage** (`Inow/Ibst > 0.7`) — a guard
+≥ 70 % of the best seen during the stage** (`I_now/I_best > optimize.accept_ratio`,
+default `0.7`) — a guard
 against ending a noisy search on a bad point. On commit, the reduced result is
 added into the full 8-vector (`nraddr`); otherwise `zero` passes through
 unchanged.
 
-`pts_iterator` dispatches each stage to `"spiral"` (default, tuned via
-`spiral_params` in `step_optimize.py`), `"L-BFGS-B"`, or `"Powell"`, and
-records/plots every `(para, intensity)` sample.
+`iterate_points` (`optimize/iterate.py`) dispatches each stage to `"spiral"`
+(default, tuned via `optimize.spiral` in the YAML config), `"L-BFGS-B"`, or
+`"Powell"`, and records every `(para, intensity)` sample into an
+`OptimizationTrace` (plotted via `servo_aligner/plotting.py`).
 
 See also [spiral.md](spiral.md) for the 2D search itself, and
 [jacobian.md](jacobian.md) for how rounds are repeated over many master
