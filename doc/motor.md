@@ -1,6 +1,6 @@
 # STS3032 Servo — Register & Position Setup
 
-We use FEETECH **STS3032** serial-bus servos used to turn the
+We use FEETECH [**STS3032**](https://www.feetechrc.com/6v-45kg-magnetic-code-360-degree-serial-bus-steering-gear) serial-bus servos used to turn the
 mirror-mount knobs.
 
 ## Connection
