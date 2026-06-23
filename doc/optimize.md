@@ -9,19 +9,13 @@ From the developer notes, the staging is implemented in
 
 ## Why 2D pairs?
 
-- **A low-dimensional search is more efficient.** The number of samples (= motor travel) needed to "fill" the high-dimensional space grows exponentially with dimension.
-- ** Horizontally, the position knob `x`
-  and the angle knob `xdot` steer the same beam coordinate, so they form a
-  tilted, elongated ridge — exactly the landscape the spiral handles well; the
-  same holds for `y` / `ydot` vertically (see [jacobian.md](jacobian.md)). The
-  horizontal and vertical subspaces, by contrast, are nearly independent of
-  each other, so little is lost by optimizing them separately.
+> **A low-dimensional search is cheaper.** The number of samples — and so the motor travel — needed to "fill" a space grows exponentially with its dimension, so we search a 2D slice at a time instead of all four knobs at once.
 
-## Iterating between near-degenerate knob pairs - a mimic of human alignment procedure
+## Iterating between near-degenerate knob pairs — mimicking a human aligner
 
-We use "x" and "xdot" to denote the horizontal position and angle knobs, and "y" and "ydot" for the vertical pair. The two pairs are nearly independent, but each pair is coupled: moving one knob shifts the optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and watch the cloud tighten around the peak over successive passes:
+When you optimize a subspace at a time, the directions you must *not* split apart are the most degenerate — the most strongly coupled ones. Split a tightly-coupled pair across separate steps and neither knob's optimum holds still: each drifts the moment you touch the other, trapping the search in a shallow local optimum. So we walk the worst-coupled knobs *together*. Here `x` / `xdot` (and `y` / `ydot`) are those pairs — both knobs steer the same beam coordinate, position *and* tilt (see [mirror_mounts.md](mirror_mounts.md)), so each pair is a tilted, elongated ridge the spiral handles well.
 
-<!-- Because the two knobs of a pair are coupled, optimizing one pair shifts the optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and watch the cloud tighten around the peak over successive passes: -->
+**Why two knobs is enough:** this degeneracy is essentially **2D** — the strong coupling lives *within* a pair, not across three or four knobs at once. So a single 2D walk already captures the worst of it, and optimizing the two pairs separately is almost sufficient. What little spills between them is weak: push the mirror far in `x` and the mount's horizontal and vertical tilt axes start to bleed into each other (coupling #2 in [mirror_mounts.md](mirror_mounts.md)), so settling `X_XDOT` nudges the `Y_YDOT` optimum and vice versa. We mop that up the way a person at the table would — **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C), pass after pass, watching the visited cloud tighten around the peak — and leave any residue to the final 4D polish:
 
 | 1st pass | 2nd pass |
 |---|---|
@@ -33,7 +27,7 @@ Left panel: visited points colored by intensity, with the dragged `(x0, y0)`
 center trajectory; right panel: intensity vs iteration. Across passes the
 visited cloud contracts toward the bright region.
 
-## The staged round in code (`calibrate_jacobian.py`)
+## The staged round in code ([`calibrate_jacobian.py`](../src/calibrate_jacobian.py))
 
 One full round chains four `step_optimize` stages, threading the running
 origin `zero` (a full 8-channel angle vector) from each stage into the next:
@@ -54,9 +48,10 @@ zero = step_optimize(servos, callback_func, pos_mask=A_POS_ALL_MASK, zero=zero, 
 2. **Spiral on the horizontal pair (`X_XDOT`).** Walk the coupled
    position-angle ridge in the horizontal plane.
 3. **Spiral on the vertical pair (`Y_YDOT`).** Same for the vertical plane.
-   (Stages 2–3 can be repeated to alternate between the pairs, as shown
-   above; one pass of each is usually enough once the centering stage has
-   done its job.)
+   (Stages 2–3 can be looped many times, alternating between the pairs as
+   shown above to chase the residual between-pair coupling. In practice,
+   though, we find a single pass of each is enough for most cases once the
+   centering stage has done its job.)
 4. **4D polish (`POS_ALL`, L-BFGS-B).** Once the spirals have found the basin,
    a short gradient search over all four knobs simultaneously (ingredient D;
    `BFGS_params`: `maxiter=10`, `eps=5`) tightens the optimum across the
@@ -81,7 +76,7 @@ added into the full 8-vector (`nraddr`); otherwise `zero` passes through
 unchanged.
 
 `pts_iterator` dispatches each stage to `"spiral"` (default, tuned via
-`spiral_params` in `step_optimize.py`), `"L-BFGS-B"`, or `"Powell"`, and
+`spiral_params` in [`step_optimize.py`](../src/step_optimize.py)), `"L-BFGS-B"`, or `"Powell"`, and
 records/plots every `(para, intensity)` sample.
 
 See also [spiral.md](spiral.md) for the 2D search itself, and

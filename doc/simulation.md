@@ -3,17 +3,17 @@
 Two hardware-free simulations support the design and let you run things off the
 Pi:
 
-1. **A geometric clipping model** (`numeric_sim.py`) — predicts the shape of the
+1. **A geometric clipping model** ([`numeric_sim.py`](../src/numeric_sim.py)) — predicts the shape of the
    transmitting "clip" region under different XY-coupling assumptions, and
    explains the [fat-tail](application.md) distortion and when the
    iterate-between-pairs alignment converges.
-2. **An optimizer test bed** (`spiral.py` `__main__`) — runs the
+2. **An optimizer test bed** ([`spiral.py`](../src/spiral.py) `__main__`) — runs the
    [spiral descent](spiral.md) against a synthetic 2D objective so the algorithm
    can be developed without motors.
 
 Both are pure NumPy/Matplotlib and safe to import/run anywhere.
 
-## 1. The geometric clipping model (`numeric_sim.py`)
+## 1. The geometric clipping model ([`numeric_sim.py`](../src/numeric_sim.py))
 
 ### What it models
 
@@ -92,14 +92,14 @@ coupling rotates with knob angle, so the optimum must be tracked
 ([spiral](spiral.md)) and the cross-coupling measured ([Jacobian](jacobian.md))
 rather than assumed constant.
 
-> The model lives at module top level (`numeric_sim.py` runs `calc_data` on
+> The model lives at module top level ([`numeric_sim.py`](../src/numeric_sim.py) runs `calc_data` on
 > import and calls `plt.show()`); adjust `crosstalk_matrix`, `zero`, and
 > `scan_type` there to explore. `example/notebooks/numeric_sim.ipynb` is the
 > interactive version.
 
-## 2. Optimizer test bed (`spiral.py`)
+## 2. Optimizer test bed ([`spiral.py`](../src/spiral.py))
 
-`spiral.py`'s `__main__` block builds a tilted 2D Gaussian
+[`spiral.py`](../src/spiral.py)'s `__main__` block builds a tilted 2D Gaussian
 (`gaussian2d` / `covariance_matrix`) and runs `SpiralPath.maximize` against it,
 plotting the space-filling spiral path and the dragged `(x0, y0)` center. This is
 how the [spiral-descent](spiral.md) parameters (`SPIRAL_RESOLUTION`, `D`,
@@ -111,7 +111,7 @@ python spiral.py        # from src/ — no servos needed
 
 The shared fitting helpers it exercises (`gaussian_2d`,
 `gaussian_2d_smooth_heaviside`, `fit_gaussian_2d*`, `statistics_skewness`) live in
-`fit_gaussian.py` and are the same ones used to fit real
+[`fit_gaussian.py`](../src/fit_gaussian.py) and are the same ones used to fit real
 [clip scans](application.md), so a fit validated in simulation behaves the same
 on measured data.
 

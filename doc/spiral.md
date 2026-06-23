@@ -1,6 +1,6 @@
 # Spiral Descent — Optimizing Fiber Coupling
 
-This note explains **why** we use a custom "spiral descent" search to maximize fiber coupling (and beam alignment generally), and **how** it is implemented in `src/spiral.py` / `src/pts_iterator.py` / `src/step_optimize.py`. How spiral stages are chained into a full optimization round is described in [optimize.md](optimize.md).
+This note explains **why** we use a custom "spiral descent" search to maximize fiber coupling (and beam alignment generally), and **how** it is implemented in [`src/spiral.py`](../src/spiral.py) / [`src/pts_iterator.py`](../src/pts_iterator.py) / [`src/step_optimize.py`](../src/step_optimize.py). How spiral stages are chained into a full optimization round is described in [optimize.md](optimize.md).
 
 ## The optimization problem
 
@@ -36,7 +36,7 @@ The spiral itself has two ingredients (labels from the developer notes):
 
 Two further ingredients — **C** (iterate between 2D knob pairs) and **D** (finish with a full-dimensional gradient step) — concern how spiral stages are *chained* into a full optimization round, not the spiral itself; see [optimize.md](optimize.md).
 
-## How the spiral works (`SpiralPath` in `spiral.py`)
+## How the spiral works (`SpiralPath` in [`spiral.py`](../src/spiral.py))
 
 Per step (`step_rdxy` → sample → `step_x0y0`):
 
@@ -52,14 +52,14 @@ Note that the spiral only intends to give a good starting point for a full-dimen
 
 ## Where it all plugs together
 
-- **`spiral.py` — `SpiralPath`**: the spiral-descent algorithm itself
+- **[`spiral.py`](../src/spiral.py) — `SpiralPath`**: the spiral-descent algorithm itself
   (`maximize(function, x0, bounds, options)`). Has a hardware-free matplotlib
   demo under `__main__` (maximizes a tilted 2D Gaussian) — the only way to see
   the algorithm run off the Pi.
-- **`pts_iterator.py` — `pts_iterator`**: dispatches to `"spiral"`,
+- **[`pts_iterator.py`](../src/pts_iterator.py) — `pts_iterator`**: dispatches to `"spiral"`,
   `"L-BFGS-B"`, or `"Powell"`, records every `(para, intensity)` sample, and
   plots the trace + convergence curve.
-- **`step_optimize.py` — `step_optimize`**: runs one optimization stage on a
+- **[`step_optimize.py`](../src/step_optimize.py) — `step_optimize`**: runs one optimization stage on a
   given `pos_mask`, then **only commits the new origin if the final intensity
   stays ≥ 70 % of the best seen** (guards against ending on a bad/noisy point).
 

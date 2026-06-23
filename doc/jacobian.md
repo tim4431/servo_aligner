@@ -2,7 +2,7 @@
 
 This note explains **what** the Jacobian means for our mirror mounts, **why** we
 calibrate it numerically instead of from geometry, and **how** the calibration
-in `src/calibrate_jacobian.py` works.
+in [`src/calibrate_jacobian.py`](../src/calibrate_jacobian.py) works.
 
 ## The setup: forward and backward paths, overlapped
 
@@ -54,7 +54,7 @@ version instead because:
 
 
 
-## How to calibrate the Jacobian (`calibrate_jacobian.py`)
+## How to calibrate the Jacobian ([`calibrate_jacobian.py`](../src/calibrate_jacobian.py))
 
 The core loop turns the physics statement *"for any master setting $A$, find the slave setting $B$ that maximizes coupling"* into data:
 
@@ -81,7 +81,7 @@ like:
 
 ### `compose_para` — where the Jacobian is applied
 
-`compose_para` (`servo_util.py`) builds the full 8-channel angle command:
+`compose_para` ([`servo_util.py`](../src/servo_util.py)) builds the full 8-channel angle command:
 
 1. Start from `zero`, add the reduced step `para` on the masked channels
    (`nraddr`).

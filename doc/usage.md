@@ -18,16 +18,16 @@ Before first run, set the servos' **Register 18 → 124** with the FD tool so th
 report multi-turn angle (see [motor.md](motor.md); the tool and a Chinese
 getting-started PDF are in [`files/`](files/)).
 
-## 2. Configure `customize.py`
+## 2. Configure [`customize.py`](../src/customize.py)
 
-`customize.py` holds all machine-specific settings and is **gitignored** — create
+[`customize.py`](../src/customize.py) holds all machine-specific settings and is **gitignored** — create
 it from the template:
 
 ```bash
 cp doc/customize.template.py src/customize.py
 ```
 
-Then edit `src/customize.py`:
+Then edit [`src/customize.py`](../src/customize.py):
 
 | Setting | Meaning |
 |---------|---------|
@@ -58,7 +58,7 @@ The same `src/` tree runs in two contexts, which **changes how you launch it**:
 
 ### Start the ZMQ server
 
-`STSServer.py` listens on a ZMQ REP socket (**port 60627**), receives pickled
+[`STSServer.py`](../src/STSServer.py) listens on a ZMQ REP socket (**port 60627**), receives pickled
 `Sequence` objects from the `expctl` framework, and moves the servos to the
 requested angles during the `QUEUE` phase.
 
@@ -75,7 +75,7 @@ turns **de-hysteresis on** before entering the message loop.
 
 ### Server CLI subcommands
 
-`STSServer.py` also parses an argparse CLI **once at startup**, before the
+[`STSServer.py`](../src/STSServer.py) also parses an argparse CLI **once at startup**, before the
 message loop — handy for manual setup without the experiment framework:
 
 ```bash
@@ -115,7 +115,7 @@ at a writable location before running.
 ## 5. Safe-to-import vs hardware modules
 
 If you are reading/editing code off the Pi, only these import without hardware:
-`servo_util.py`, `servo_const.py`, `spiral.py`, `fit_gaussian.py`,
-`numeric_sim.py`. Everything else opens a serial port or the I2C ADC at import.
-`spiral.py` and `numeric_sim.py` have `__main__` matplotlib demos that are the
+[`servo_util.py`](../src/servo_util.py), [`servo_const.py`](../src/servo_const.py), [`spiral.py`](../src/spiral.py), [`fit_gaussian.py`](../src/fit_gaussian.py),
+[`numeric_sim.py`](../src/numeric_sim.py). Everything else opens a serial port or the I2C ADC at import.
+[`spiral.py`](../src/spiral.py) and [`numeric_sim.py`](../src/numeric_sim.py) have `__main__` matplotlib demos that are the
 only things you can actually *run* on a dev machine.
