@@ -346,9 +346,27 @@ if __name__ == "__main__":
 
     plt.contourf(X, Y, Z)
 
-    sp = SpiralPath()
+    # The default config's I_meaningful is scaled for hardware ADC counts; this
+    # demo Gaussian peaks at ~0.004, so scale the tunables to that intensity or
+    # the centre-drag (ingredient B) never activates and the spiral stays put.
+    peak = gaussian2d(mu[0], mu[1], mu, cov)
+    demo_config = SpiralPathConfig(
+        I_meaningful=peak * 0.2,
+        D=3,
+        SPIRAL_RESOLUTION=20,
+        SPIRAL_SPAN=30,
+        SINGLE_SPIRAL_SPAN=10,
+        MAX_X0Y0_DISPLACEMENT=10,
+        COEF_I_RESET_ORIGIN=1.4,
+        alpha=0.05,
+        COEF_I_DECAY=0.995,
+    )
+
+    sp = SpiralPath(config=demo_config)
     callback_function = lambda xy: gaussian2d(xy[0], xy[1], mu, cov)
-    sp.maximize(callback_function, x0=(0, 0), bounds=[(-40, 40), (-40, 40)])
+    end = sp.maximize(callback_function, x0=(0, 0), bounds=[(-40, 40), (-40, 40)])
+    print(f"true peak at {tuple(mu)}, spiral ended at "
+          f"({end[0]:.1f}, {end[1]:.1f})")
 
     plt.plot(sp.pts_x, sp.pts_y, "r")
     plt.plot(sp.pts_x0, sp.pts_y0, "b")
