@@ -16,8 +16,9 @@ from servodriver import Servoset
 from servo_util import compose_para
 from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_POS_ALL_MASK,POS_ALL_MASK
 from step_optimize import step_optimize
+from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN
 
-servos = Servoset(board_id=0,servo_channel_list=[0,1,2,3,4,5,6,7])
+servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis=True
 servos.torques_enable()
 # servos.home()
@@ -81,9 +82,10 @@ def load_assumed_jac(path):
     return jac, jac_x0
 
 
-# Bootstrap from a previously-fit Jacobian (extrapolation): set to an .npz path
-# containing a 'jac' (and optional 'x0') array, or None to start from the origin.
-JAC_ASSUME_PATH = None
+# Bootstrap from a previously-fit Jacobian (extrapolation): jacobian.assume_path
+# in calibration.yaml is an .npz with a 'jac' (and optional 'x0') array, or null
+# to start from the plain origin.
+JAC_ASSUME_PATH = JACOBIAN.get("assume_path")
 jac_assume, jac_x0 = load_assumed_jac(JAC_ASSUME_PATH)
 
 cf00 = lambda para: callback_func(para, pos_mask=POS_ALL_MASK,zero=np.array([0,0,0,0,0,0,0,0],dtype=float))
@@ -92,13 +94,16 @@ print(cf00([0,0,0,0,0,0,0,0]))
 #
 #ss
 N=1
-normd = 20
+normd = JACOBIAN.get("normd", 20)
 offset_type = 'zero' # 'pm' or 'rand' or 'lin' or 'zero'
 MASTER = "B"  # A=upper path, B=lower path
+# Output folder for Jacobian data, under paths.data_folder (machine.yaml).
+JAC_FOLDER = os.path.join(DATA_FOLDER, JACOBIAN.get("output_subdir", "jacobian"))
 #
 for i in range(N):
     if offset_type in ['pm','rand','lin']:
-        filename='/home/rydpiservo/servodata/servosetup5/jacobian_{:s}_{:d}.npy'.format(offset_type,normd)
+        os.makedirs(JAC_FOLDER, exist_ok=True)
+        filename=os.path.join(JAC_FOLDER, 'jacobian_{:s}_{:d}.npy'.format(offset_type,normd))
         if not os.path.exists(filename):
             dataset = defaultdict(list)
             np.save(filename,dataset)
@@ -118,10 +123,8 @@ for i in range(N):
     elif offset_type == 'rand':
         offset = random_norm_offset(N,normd)
     elif offset_type == 'lin':
-        if MASTER == "A":
-            vecs = [np.array([1,0,1.35,0]), np.array([0,1,0,-1.36])]
-        elif MASTER == "B":
-            vecs = [np.array([1,0,-0.67,0]), np.array([0,1,0,-0.67])]
+        # coupling directions per master path live in calibration.yaml.
+        vecs = [np.array(v) for v in COUPLING_VECTORS[MASTER]]
         offset = lin_comb_offset(N,normd,vecs,i)
     elif offset_type == 'zero':
         offset = np.zeros(np.sum(offset_mask))

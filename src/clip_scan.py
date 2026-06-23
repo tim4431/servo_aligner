@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -17,13 +18,18 @@ from motor_scan import motor_2d_scan
 from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,POS_ALL_MASK, posmask2str
 from pd import MCP3424_fiber
 from step_optimize import step_optimize
+from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, ACCEPT_FUNCTIONS, CLIP_SCAN
 
 
-servos = Servoset(board_id=0,servo_channel_list=[0,1,2,3,4,5,6,7])
+servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis=False
 servos.torques_enable()
 
-FOLDER = "/home/rydpiservo/servodata/servorecover5/"
+# Output folder for scan results, under paths.data_folder (machine.yaml).
+FOLDER = os.path.join(DATA_FOLDER, CLIP_SCAN.get("output_subdir", "clip_scan")) + os.sep
+os.makedirs(FOLDER, exist_ok=True)
+# Minimum fitted intensity to accept a new zero point (clip_scan in calibration.yaml).
+I_meaningful = CLIP_SCAN.get("I_meaningful", 0.1)
 
 def callback_func(para,
                   pos_mask,
@@ -53,23 +59,13 @@ def accept_func_linearxy(xy, slope, b, tol):
     x,y = xy[0],xy[1]
     return np.abs(y-x*slope-b)<tol
 
-accept_func_AXXDOT = lambda xy: accept_func_linearxy(xy,1.35,0,80)
-accept_func_AYYDOT = lambda xy: accept_func_linearxy(xy,-1.36,5,80)
-accept_func_BXXDOT = lambda xy: accept_func_linearxy(xy,-0.67,0,80)
-accept_func_BYYDOT = lambda xy: accept_func_linearxy(xy,-0.67,5,80)
-
 def posmask2acceptfunc(posmask):
-    if posmask == A_X_XDOT_MASK:
-        return accept_func_AXXDOT
-    elif posmask == A_Y_YDOT_MASK:
-        return accept_func_AYYDOT
-    elif posmask == B_X_XDOT_MASK:
-        return accept_func_BXXDOT
-    elif posmask == B_Y_YDOT_MASK:
-        return accept_func_BYYDOT
-    else:
-        raise ValueError("posmask not recognized")
-        return None
+    # accept-function coefficients live in calibration.yaml, keyed by mask name.
+    name = posmask2str(posmask)
+    params = ACCEPT_FUNCTIONS.get(name)
+    if params is None:
+        raise ValueError("No accept function configured for posmask {}".format(name))
+    return lambda xy: accept_func_linearxy(xy, params["slope"], params["b"], params["tol"])
 
 def scan_and_analyze(zero,N_pts,ITER_NUM,POS_MASK,SCAN_RANGE,enable_accfunc=True,plot_type=0):
     # PERFORM SCAN
@@ -171,7 +167,6 @@ def scan_and_analyze(zero,N_pts,ITER_NUM,POS_MASK,SCAN_RANGE,enable_accfunc=True
 
 
 if __name__ == "__main__":
-    I_meaningful = 0.1
     zero = np.array([0,0,0,0,0,0,0,0],dtype=float)
     # fileName = "clip_A_Y_YDOT_3"
     # d = np.load("{}{}_popt.npz".format(FOLDER,fileName))
@@ -183,11 +178,11 @@ if __name__ == "__main__":
     for ITER_NUM in range(6,7):
         for POS_MASK in [A_X_XDOT_MASK,A_Y_YDOT_MASK]:
         # for POS_MASK in [A_Y_YDOT_MASK]:
-            N_pts = 50
-            SCAN_RANGE = 500 if POS_MASK==A_X_XDOT_MASK else 800
+            N_pts = CLIP_SCAN.get("N_pts_fine", 50)
+            SCAN_RANGE = CLIP_SCAN.get("scan_range_xxdot", 500) if POS_MASK==A_X_XDOT_MASK else CLIP_SCAN.get("scan_range_yydot", 800)
             zero = scan_and_analyze(zero,N_pts,ITER_NUM,POS_MASK,SCAN_RANGE,plot_type=0)
         #
-        N_pts = 15
+        N_pts = CLIP_SCAN.get("N_pts_coarse", 15)
         POS_MASK = A_X_Y_MASK
-        SCAN_RANGE = 30
+        SCAN_RANGE = CLIP_SCAN.get("scan_range_xy", 30)
         zero = scan_and_analyze(zero,N_pts,ITER_NUM,POS_MASK,SCAN_RANGE,enable_accfunc=False,plot_type=1)

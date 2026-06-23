@@ -11,7 +11,7 @@ Raspberry Pi  →  URT / serial driver board  →  servo 1 → servo 2 → … (
 
 Servos share one serial bus and are addressed by **ID** (not by position on the
 chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in
-[`customize.py`](../src/customize.py) (`sts3032_dict`).
+[`machine.yaml`](../src/machine.template.yaml) (`servo.channels`).
 
 Default bus settings: **baudrate 1 000 000**,
 
@@ -83,14 +83,14 @@ Set the **min and max position limits to `0, 0`** (not `0, 4095`):
 | Addr | Name | Used for |
 |-----:|------|----------|
 | 40 | `TORQUE_ENABLE`    | `1` enable, `0` disable torque. Writing **`128`** triggers the **set-zero / mid-point calibration** (`set_zero`). |
-| 41 | `GOAL_ACC`         | Goal acceleration (`SERVO_ACC` from [`customize.py`](../src/customize.py)). |
+| 41 | `GOAL_ACC`         | Goal acceleration (`servo.acc` from [`machine.yaml`](../src/machine.template.yaml)). |
 | 42 | `GOAL_POSITION`    | Target position (written via group-sync-write for all servos at once). |
-| 46 | `GOAL_SPEED`       | Goal speed (`SERVO_SPEED` from [`customize.py`](../src/customize.py)). |
+| 46 | `GOAL_SPEED`       | Goal speed (`servo.speed` from [`machine.yaml`](../src/machine.template.yaml)). |
 | 56 | `PRESENT_POSITION` | Current position (group-sync-read; basis for turn counting). |
 | 66 | `MOVING_STATUS`    | `0` when the servo has stopped — used to know a move finished. |
 
-Speed/acceleration defaults come from [`customize.py`](../src/customize.py) (`SERVO_SPEED`,
-`SERVO_ACC`); per-servo overrides are possible via `set_speed` / `set_acc`.
+Speed/acceleration defaults come from [`machine.yaml`](../src/machine.template.yaml)
+(`servo.speed`, `servo.acc`); per-servo overrides are possible via `set_speed` / `set_acc`.
 
 ## De-hysteresis (backlash compensation)
 
@@ -105,16 +105,20 @@ The **3D-printed** mirror-mount frame is **not perfectly rigid**, and the coupli
 from the **+** direction, so backlash is always taken up the same way. For each
 servo it compares the goal to the current position:
 
-- **Moving `+` (or by ≤ `POS_THRESHOLD = 2` encoder steps):** go straight to the
+- **Moving `+` (or by ≤ the `threshold` encoder steps):** go straight to the
   goal.
-- **Moving `−` by more than `POS_THRESHOLD`:** first **overshoot to
-  `goal − 100`** encoder steps, then move **up** to the goal — so the knob always
-  settles while turning in the `+` direction.
+- **Moving `−` by more than `threshold`:** first **overshoot to
+  `goal − overshoot`** encoder steps, then move **up** to the goal — so the knob
+  always settles while turning in the `+` direction.
+
+The `threshold` (default 2) and `overshoot` (default 100) steps, plus the default
+on/off state, are set under `servo.de_hysteresis` in
+[`machine.yaml`](../src/machine.template.yaml) — tune them to the physical mount.
 
 
 ### Toggling it
 
-- `servos.de_hysterisis` — `True` by default (set in `Servoset.__init__`).
+- `servos.de_hysterisis` — defaults to `servo.de_hysteresis.enabled` in `machine.yaml` (set in `Servoset.__init__`).
 - CLI: the `dehys 0|1` subcommand (`STSServer.set_dehys_args`).
 - It is a **speed/accuracy trade-off**: each negative move becomes *two* physical
   moves. [`calibrate_jacobian.py`](../src/calibrate_jacobian.py) runs with it **on** (accuracy matters);

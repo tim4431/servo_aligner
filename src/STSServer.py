@@ -4,6 +4,7 @@ import time
 import numpy as np
 from ServerClass import Server, logger
 from servodriver import Servoset
+from config import SERVER, SERVO_CHANNEL_LIST, DE_HYSTERESIS
 import argparse
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -94,11 +95,10 @@ if __name__ == '__main__':
 	==                STS3032                ==
 	===========================================`
 	"""
-	server = STSServer("STS1", 60627, message=message, board_id=0, servo_channel_list=[0,1,2,3,4,5,6,7])
+	server = STSServer(SERVER["name"], SERVER["port"], message=message, board_id=SERVER["board_id"], servo_channel_list=SERVO_CHANNEL_LIST)
 	# Create a servozero subcommand
 	parser = argparse.ArgumentParser()
 	subparsers = parser.add_subparsers()
-	DE_HYSTERESIS = True
 	server.servos.de_hysterisis = DE_HYSTERESIS
 
 	# set_zero

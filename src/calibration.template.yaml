@@ -1,0 +1,83 @@
+# calibration.yaml - optics-setup / calibration-dependent configuration.
+#
+# Copy this file to `calibration.yaml` (gitignored) and tune it for your
+# optical setup:
+#     cp calibration.template.yaml calibration.yaml
+#
+# Everything here depends on how the servos map to mirror knobs and on the
+# beam geometry, so it is re-tuned per setup. Pure hardware/software settings
+# live in machine.yaml instead.
+
+# --- Channel grouping masks --------------------------------------------------
+# Which channel indices form each knob group. A = upper beam path, B = lower.
+# Each entry is a 0/1 list over the channels defined in machine.yaml
+# (servo.channels order). The naming is <PATH>_<KNOBS>:
+#   x, y   = position knobs; xdot, ydot = angle knobs.
+masks:
+  A_X_XDOT:    [1, 0, 1, 0, 0, 0, 0, 0]
+  A_Y_YDOT:    [0, 1, 0, 1, 0, 0, 0, 0]
+  A_X_Y:       [1, 1, 0, 0, 0, 0, 0, 0]
+  A_XDOT_YDOT: [0, 0, 1, 1, 0, 0, 0, 0]
+  A_POS_ALL:   [1, 1, 1, 1, 0, 0, 0, 0]
+  B_X_XDOT:    [0, 0, 0, 0, 1, 0, 1, 0]
+  B_Y_YDOT:    [0, 0, 0, 0, 0, 1, 0, 1]
+  B_X_Y:       [0, 0, 0, 0, 0, 0, 1, 1]
+  B_XDOT_YDOT: [0, 0, 0, 0, 1, 1, 0, 0]
+  B_POS_ALL:   [0, 0, 0, 0, 1, 1, 1, 1]
+  POS_ALL:     [1, 1, 1, 1, 1, 1, 1, 1]
+
+# --- Beam-clip accept functions ----------------------------------------------
+# Restrict the clip_scan raster to the line  y ~= slope*x + b  (+/- tol),
+# in encoder steps. Keyed by mask name.
+accept_functions:
+  A_X_XDOT: {slope: 1.35,  b: 0, tol: 80}
+  A_Y_YDOT: {slope: -1.36, b: 5, tol: 80}
+  B_X_XDOT: {slope: -0.67, b: 0, tol: 80}
+  B_Y_YDOT: {slope: -0.67, b: 5, tol: 80}
+
+# --- Jacobian coupling vectors -----------------------------------------------
+# Per master path, the (master-knob -> slave-knob) coupling directions used to
+# seed offsets during Jacobian calibration (offset_type 'lin').
+coupling_vectors:
+  A:
+    - [1, 0, 1.35, 0]
+    - [0, 1, 0, -1.36]
+  B:
+    - [1, 0, -0.67, 0]
+    - [0, 1, 0, -0.67]
+
+# --- Spiral-descent optimizer tuning (spiral.SpiralPathConfig) ----------------
+spiral:
+  I_meaningful: 0.005              # intensity scale that counts as real signal
+  D: 2.4                           # initial spiral arm spacing
+  SPIRAL_RESOLUTION: 14            # samples per spiral loop
+  SPIRAL_SPAN: 6                   # total run length, in loops
+  SINGLE_SPIRAL_SPAN: 3.5          # max loops one spiral runs before giving up
+  N_LOOPS_BEFORE_RESET_ORIGIN: 0.5 # loops before origin resets are allowed
+  MAX_X0Y0_DISPLACEMENT: 10        # clamp on per-step centre displacement
+  COEF_I_RESET_ORIGIN: 1.4         # sample/best ratio that triggers a reset
+  alpha: 0.03                      # base learning rate for dragging the centre
+  COEF_I_DECAY: 0.995              # per-step decay of the breakthrough bar
+
+# --- L-BFGS-B optimizer options ----------------------------------------------
+bfgs:
+  disp: true
+  maxiter: 10
+  eps: 5
+
+# --- clip_scan raster settings -----------------------------------------------
+clip_scan:
+  output_subdir: servorecover5     # subfolder under paths.data_folder
+  I_meaningful: 0.1                # min intensity to accept a fitted centre
+  N_pts_fine: 50                   # raster points/axis for the X_XDOT/Y_YDOT scans
+  N_pts_coarse: 15                 # raster points/axis for the X_Y scan
+  scan_range_xxdot: 500            # half-range (steps) for *_X_XDOT scans
+  scan_range_yydot: 800            # half-range (steps) for *_Y_YDOT scans
+  scan_range_xy: 30                # half-range (steps) for the *_X_Y scan
+
+# --- Jacobian calibration settings -------------------------------------------
+jacobian:
+  output_subdir: servosetup5       # subfolder under paths.data_folder
+  normd: 20                        # offset probe magnitude
+  assume_path: null                # .npz with a prior 'jac' (+ optional 'x0'),
+                                   # or null to start from the plain origin

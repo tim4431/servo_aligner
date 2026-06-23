@@ -1,0 +1,69 @@
+# machine.yaml - hardware / software configuration for ONE machine (Pi).
+#
+# Copy this file to `machine.yaml` (gitignored) and edit it for your setup:
+#     cp machine.template.yaml machine.yaml
+#
+# This holds everything tied to the physical controller: serial bus, the
+# servo channel map, the ADC wiring, filesystem paths and the server identity.
+# Optics/calibration-dependent settings live in calibration.yaml instead.
+
+# --- Serial bus to the servo driver board ------------------------------------
+serial:
+  # Candidate serial devices, tried in order; the first that opens wins.
+  #   Windows: "COM1"   Linux: "/dev/ttyUSB0"   Mac: "/dev/tty.usbserial-*"
+  devices:
+    - /dev/ttyUSB0
+    - /dev/ttyUSB1
+    - /dev/ttyUSB2
+  baudrate: 1000000        # STS3032 factory default is 1000000
+
+# --- Servo defaults + the channel layout -------------------------------------
+servo:
+  speed: 2000              # default goal speed applied to every servo
+  acc: 90                  # default goal acceleration applied to every servo
+  # De-hysteresis: negative-direction moves overshoot then return so backlash
+  # is always taken up from the same side. Tune to the physical mount.
+  de_hysteresis:
+    enabled: true
+    overshoot: 100         # encoder steps to overshoot on a negative move
+    threshold: 2           # min |delta| (steps) before de-hysteresis engages
+  # The channel map. LIST ORDER defines the channel index (0,1,2,...) used by
+  # every vector in the code (masks, angle lists). `id` is the servo's bus
+  # address; `name` is a human label. Keep index, id and name all correct.
+  channels:
+    - {id: 3, name: '1x'}
+    - {id: 4, name: '1y'}
+    - {id: 1, name: '2x'}
+    - {id: 2, name: '2y'}
+    - {id: 5, name: '3x'}
+    - {id: 6, name: '3y'}
+    - {id: 7, name: '4x'}
+    - {id: 8, name: '4y'}
+    # Extra servos (e.g. a second beam path) just extend the list:
+    # - {id: 9,  name: 'UV1x'}
+    # - {id: 10, name: 'UV1y'}
+    # - {id: 11, name: 'UV2x'}
+    # - {id: 12, name: 'UV2y'}
+
+# --- Photodiode ADC (MCP3424 over I2C): the optimization feedback signal ------
+adc:
+  i2c_bus: 1               # SMBus number (Raspberry Pi I2C bus)
+  address: 0x68            # I2C address of the MCP3424
+  device: MCP3424
+  channel: 0               # ADC input channel wired to the photodiode
+  gain: 1
+  resolution: 16
+
+# --- Filesystem paths --------------------------------------------------------
+paths:
+  # Where servos_<board>.json (persisted encoder positions) is read/written.
+  # In production this is the installed package directory.
+  home_folder: /home/rydpiservo/expctl/src/expctl/servers/servoaligner/
+  # Base directory for scan / calibration output (scripts create subfolders).
+  data_folder: /home/rydpiservo/servodata/
+
+# --- ZMQ server identity -----------------------------------------------------
+server:
+  name: STS1
+  port: 60627
+  board_id: 0              # selects the servos_<board_id>.json file

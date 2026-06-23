@@ -1,5 +1,12 @@
 import numpy as np
 
+# STS3032 12-bit encoder geometry. These are fixed by the servo hardware (not
+# the machine), so they live in code rather than in the YAML config.
+ENCODER_CENTER = 2048    # encoder count reported at 0 deg
+COUNTS_PER_TURN = 4096   # encoder counts per full revolution
+DEGREES_PER_TURN = 360
+
+
 def create_zigzag_X(X):
     X_zigzag = np.copy(X)  # Create a copX of X to modifX
     index_map = np.zeros_like(X, dtype=int)  # To track the original indices, elements in X_zigzag and their original index in X
@@ -17,7 +24,7 @@ def create_zigzag_X(X):
     return X_zigzag, index_map
 
 def a2p(angle):
-    return int(angle*(4096/360)+2048)
+    return int(angle*(COUNTS_PER_TURN/DEGREES_PER_TURN)+ENCODER_CENTER)
 
 def r2nd(r,r_mask=None)->np.ndarray:
     if r_mask is None:

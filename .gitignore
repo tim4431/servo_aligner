@@ -173,9 +173,14 @@ dmypy.json
 /Scripts/wheel3.exe
 /Scripts/wheel-3.9.exe
 
-./servos.json
-./servos_0.json
-/servos_*.json
-!/servos_template.json
-/customize.py
+# --- servo_aligner machine-specific config & state ---------------------------
+# Real per-machine config lives in src/machine.yaml + src/calibration.yaml,
+# copied from the checked-in *.template.yaml files. Never commit the real ones.
+/src/machine.yaml
+/src/calibration.yaml
+
+# Persisted encoder positions (written at runtime, one file per board id).
+/src/servos_*.json
+!/src/servos_template.json
+
 data/

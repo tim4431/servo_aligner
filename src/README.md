@@ -6,12 +6,20 @@ Control software for FEETECH **STS3032** serial-bus servo motors driving optical
 
 ## Setup
 
-Create `customize.py` from [`../doc/customize.template.py`](../doc/customize.template.py) and fill in the serial device list, baudrate, `HOME_FOLDER`, and the `sts3032_dict` channel→`[ID, name]` map. It is gitignored. `servos_0.json` persists the last encoder positions between runs.
+Configuration lives in two gitignored YAML files, loaded by [`config.py`](config.py) (needs PyYAML). Create them from the checked-in templates:
+
+```bash
+cp machine.template.yaml     machine.yaml       # serial bus, channel map, ADC, paths, server
+cp calibration.template.yaml calibration.yaml   # masks, accept functions, coupling vectors, optimizer tuning
+```
+
+`machine.yaml` holds per-machine hardware/software settings; `calibration.yaml` holds optics-setup/calibration values. Override their paths with `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` if needed. `servos_0.json` persists the last encoder positions between runs.
 
 ## Layout
 
 | File | Role |
 |------|------|
+| `config.py` + `machine.yaml` / `calibration.yaml` | Loads the two YAML config files (machine hardware/software vs. optics/calibration) and exposes them as constants. Edit the YAML, not the code, when migrating. |
 | `servodriver.py` | `sts3032` (single motor) and `Servoset` (the 8-motor set): connect, move, multi-turn tracking, de-hysteresis, position persistence. |
 | `pd.py` | Photodiode ADC reader (MCP3424 over I2C) — the optimization signal. |
 | `scservo_sdk/` | Vendored FEETECH serial-servo SDK (do not edit). |

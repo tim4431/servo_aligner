@@ -11,36 +11,57 @@ an MCP3424 ADC on I2C reading the photodiode. Most modules **touch hardware at
 import time**, so they cannot be imported on a dev machine.
 
 Python dependencies: `numpy`, `scipy`, `matplotlib`, `tqdm`, `pyzmq`,
-`coloredlogs`, `smbus2`, `MCP342x` (I2C ADC). The FEETECH serial SDK is vendored
-in `src/scservo_sdk/` — nothing to install.
+`coloredlogs`, `pyyaml` (config files), `smbus2`, `MCP342x` (I2C ADC). The
+FEETECH serial SDK is vendored in `src/scservo_sdk/` — nothing to install.
 
 Before first run, set the servos' **Register 18 → 124** with the FD tool so they
 report multi-turn angle (see [motor.md](motor.md); the tool and a Chinese
 getting-started PDF are in [`files/`](files/)).
 
-## 2. Configure [`customize.py`](../src/customize.py)
+## 2. Configure the YAML files
 
-[`customize.py`](../src/customize.py) holds all machine-specific settings and is **gitignored** — create
-it from the template:
+All machine- and setup-specific values live in **two gitignored YAML files** in
+`src/`, loaded once by [`config.py`](../src/config.py). Create them from the
+checked-in templates:
 
 ```bash
-cp doc/customize.template.py src/customize.py
+cp src/machine.template.yaml     src/machine.yaml
+cp src/calibration.template.yaml src/calibration.yaml
 ```
 
-Then edit [`src/customize.py`](../src/customize.py):
+### [`machine.yaml`](../src/machine.template.yaml) — hardware / software (per machine)
 
-| Setting | Meaning |
+| Section | Meaning |
 |---------|---------|
-| `HOME_FOLDER` | Absolute folder where `servos_<board>.json` (saved positions) lives. In production this is the installed package path, e.g. `…/expctl/servers/servoaligner/`. |
-| `DEVICENAME_LIST` | Candidate serial devices, tried in order (e.g. `['/dev/ttyUSB0','/dev/ttyUSB1','/dev/ttyUSB2']`). The first one that opens wins. |
-| `BAUDRATE` | Serial baudrate; STS3032 default is `1000000`. |
-| `SERVO_SPEED`, `SERVO_ACC` | Default move speed / acceleration applied to every servo. |
-| `sts3032_dict` | The channel map: `{channel_index: [servo_ID, "name"]}`. **Order defines the 8-element vectors** used everywhere (masks, angles). |
+| `serial.devices` | Candidate serial devices, tried in order (e.g. `/dev/ttyUSB0…2`). The first one that opens wins. |
+| `serial.baudrate` | Serial baudrate; STS3032 default is `1000000`. |
+| `servo.speed`, `servo.acc` | Default move speed / acceleration applied to every servo. |
+| `servo.de_hysteresis` | Backlash compensation tuned to the physical mount: `enabled`, `overshoot` (steps), `threshold`. |
+| `servo.channels` | The channel map — a list of `{id, name}`. **List order defines the channel index** and thus the 8-element vectors used everywhere (masks, angles). |
+| `adc` | MCP3424 I2C wiring: `i2c_bus`, `address`, `channel`, `gain`, `resolution`. |
+| `paths.home_folder` | Absolute folder where `servos_<board>.json` (saved positions) lives. In production this is the installed package path. |
+| `paths.data_folder` | Base folder for scan/calibration output (scripts create subfolders under it). |
+| `server` | ZMQ server identity: `name`, `port`, `board_id`. |
 
-> `sts3032_dict` is the source of truth for the channel layout. The default maps
+> `servo.channels` is the source of truth for the channel layout. The default maps
 > indices 0–7 to the eight alignment knobs; the commented-out entries (UV servos)
-> show how to extend it. Channel **index** (position in the vector) is distinct
-> from servo **ID** (bus address) — keep both correct.
+> show how to extend it. Channel **index** (list position) is distinct from servo
+> **ID** (bus address) — keep both correct.
+
+### [`calibration.yaml`](../src/calibration.template.yaml) — optics / calibration (per setup)
+
+| Section | Meaning |
+|---------|---------|
+| `masks` | The channel grouping masks (`A_X_XDOT`, …): which channel indices form each knob group. Depends on which servo drives which knob. |
+| `accept_functions` | Beam-clip raster region per mask: `slope`, `b`, `tol`. |
+| `coupling_vectors` | Per-path (`A`/`B`) Jacobian coupling directions used to seed offsets. |
+| `spiral`, `bfgs` | Optimizer tuning (spiral-descent + L-BFGS-B). |
+| `clip_scan`, `jacobian` | Scan/calibration knobs: output subfolders, point counts, scan ranges, probe magnitude. |
+
+The file locations default to `src/`; override them with the
+`SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` environment
+variables. Constants fixed by the STS3032 itself (control-table addresses, the
+`2048`/`4096` encoder geometry) are **not** in YAML — they stay in code.
 
 `servos_0.json` is created automatically on first run and rewritten on every move
 and at exit; it lets software turn-counting survive a program restart (but not a
@@ -108,9 +129,10 @@ nohup python -m expctl.servers.servoaligner.clip_scan > clip.log 2>&1 &
 What they do and the physics behind them: [application.md](application.md)
 (beam centering & MOT alignment), [spiral.md](spiral.md) (the 2D optimizer),
 [optimize.md](optimize.md) (how spiral stages chain into a full round), and
-[jacobian.md](jacobian.md) (the coupling calibration). Output folders
-(`FOLDER`, dataset paths) are hard-coded near the top of each script — point them
-at a writable location before running.
+[jacobian.md](jacobian.md) (the coupling calibration). Output folders are derived
+from `paths.data_folder` (machine.yaml) plus the `output_subdir` in
+calibration.yaml (`clip_scan.output_subdir`, `jacobian.output_subdir`), and are
+created automatically — point `data_folder` at a writable location.
 
 ## 5. Safe-to-import vs hardware modules
 

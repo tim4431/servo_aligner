@@ -10,18 +10,28 @@ The physics background, alignment procedure, de-hysteresis rationale, Jacobian/o
 
 ## Hardware dependency
 
-Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `pd.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `pd.py` reads the ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `servo_util.py`, `servo_const.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py`.
+Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `pd.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `pd.py` reads the ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `config.py`, `servo_util.py`, `servo_const.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py` (the first two need PyYAML and the `machine.yaml`/`calibration.yaml` files present, since `config.py` reads them at import and `servo_const.py` pulls its masks from `config`).
 
 ## Two ways the code runs
 
 1. **ZMQ server** — `STSServer.py` subclasses `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework. It listens on a ZMQ REP socket (port 60627), receives pickled `Sequence` objects (`sequence.py` is a vendored copy of the expctl class), and drives servos to the requested angles during the `QUEUE` phase. It also exposes an argparse CLI (`set_zero`, `home`, `set_angle`, `set_single`, `dehys`) parsed once at startup before entering the message loop.
 2. **Standalone scripts** — `clip_scan.py` and `calibrate_jacobian.py` are run directly as alignment/calibration routines (see Commands).
 
-In production the whole `src/` tree is dropped into the expctl package as `expctl.servers.servoaligner` (note the `python -m expctl.servers.servoaligner.X` invocations and the `HOME_FOLDER` path in `customize.py`). Run standalone, scripts use flat imports (`from servodriver import Servoset`) and must be launched from inside `src/`.
+In production the whole `src/` tree is dropped into the expctl package as `expctl.servers.servoaligner` (note the `python -m expctl.servers.servoaligner.X` invocations and the `home_folder` path in `machine.yaml`). Run standalone, scripts use flat imports (`from servodriver import Servoset`) and must be launched from inside `src/`.
 
 ## Setup
 
-`customize.py` holds machine-specific config (serial device list, baudrate, `HOME_FOLDER`, servo speed/acc, and `sts3032_dict` mapping channel index → `[servo ID, name]`). It is **gitignored**; create it from `doc/customize.template.py`. `servos_0.json` persists the last-known encoder positions across restarts and is rewritten on every move and at exit (`atexit`).
+All machine- and setup-specific values live in **two gitignored YAML files**, loaded once by `config.py` (requires PyYAML). Create them from the checked-in templates:
+
+```bash
+cp src/machine.template.yaml     src/machine.yaml       # hardware / software
+cp src/calibration.template.yaml src/calibration.yaml   # optics / calibration
+```
+
+- **`machine.yaml`** — per-Pi hardware/software: serial `devices`/`baudrate`, servo `speed`/`acc`, the `de_hysteresis` tuning, the `channels` map (list order = channel index, each `{id, name}`), the `adc` I2C wiring (MCP3424 bus/address/channel/gain), filesystem `paths` (`home_folder`, `data_folder`), and the ZMQ `server` (`name`/`port`/`board_id`).
+- **`calibration.yaml`** — optics-setup/calibration-dependent: the channel grouping `masks`, beam-clip `accept_functions`, Jacobian `coupling_vectors`, and optimizer tuning (`spiral`, `bfgs`, `clip_scan`, `jacobian`).
+
+`config.py` reads both at import and exposes the values as module constants (`DEVICENAME_LIST`, `sts3032_dict`, `MASKS`, `SPIRAL_PARAMS`, …); file locations can be overridden with the `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` env vars. STS3032-fixed constants (control-table addresses; the `2048`/`4096` encoder geometry in `servo_util.py`) stay in code, not YAML. `servos_0.json` persists the last-known encoder positions across restarts and is rewritten on every move and at exit (`atexit`).
 
 ## Commands
 

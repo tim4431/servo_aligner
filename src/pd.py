@@ -1,9 +1,12 @@
 from smbus2 import SMBus
 import MCP342x
-i2cbus = SMBus(1)
-MCP3424_fiber=MCP342x.MCP342x(i2cbus, 0x68, device='MCP3424', channel=0, gain=1, resolution=16, continuous_mode=False, scale_factor=1.0, offset=0.0)
-# MCP3424_pinhole=MCP342x.MCP342x(i2cbus, 0x68, device='MCP3424', channel=1, gain=1, resolution=16, continuous_mode=False, scale_factor=1.0, offset=0.0)
-# MCP3424_ref=MCP342x.MCP342x(i2cbus, 0x68, device='MCP3424', channel=2, gain=4, resolution=16, continuous_mode=False, scale_factor=1.0, offset=0.0)
+from config import ADC
+
+# I2C / MCP3424 wiring comes from machine.yaml (the `adc:` section).
+i2cbus = SMBus(ADC["i2c_bus"])
+MCP3424_fiber=MCP342x.MCP342x(i2cbus, ADC["address"], device=ADC.get("device", "MCP3424"), channel=ADC.get("channel", 0), gain=ADC.get("gain", 1), resolution=ADC.get("resolution", 16), continuous_mode=False, scale_factor=1.0, offset=0.0)
+# MCP3424_pinhole=MCP342x.MCP342x(i2cbus, ADC["address"], device='MCP3424', channel=1, gain=1, resolution=16, continuous_mode=False, scale_factor=1.0, offset=0.0)
+# MCP3424_ref=MCP342x.MCP342x(i2cbus, ADC["address"], device='MCP3424', channel=2, gain=4, resolution=16, continuous_mode=False, scale_factor=1.0, offset=0.0)
 
 # ADS1115_fiber
 # from adafruit_ads1x15.analog_in import AnalogIn

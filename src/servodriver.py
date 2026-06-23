@@ -11,7 +11,20 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import atexit
-from customize import *
+from config import (
+    DEVICENAME_LIST,
+    BAUDRATE,
+    SERVO_SPEED,
+    SERVO_ACC,
+    HOME_FOLDER,
+    sts3032_dict,
+    SERVO_CHANNEL_LIST,
+    SERVER,
+    DE_HYSTERESIS,
+    DEHYS_OVERSHOOT,
+    DEHYS_THRESHOLD,
+)
+from servo_util import ENCODER_CENTER, COUNTS_PER_TURN, DEGREES_PER_TURN
 
 
 # Control table address
@@ -50,7 +63,7 @@ class sts3032:
         elif scs_error != 0:
             logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
         self.turn_num = 0
-        self.angle_current = 2048
+        self.angle_current = ENCODER_CENTER
         try:
             scs_present_position_speed, scs_comm_result, scs_error = self.packetHandler.read4ByteTxRx(self.portHandler, self.SCS_ID, ADDR_STS_PRESENT_POSITION)
             if scs_comm_result != COMM_SUCCESS:
@@ -126,7 +139,7 @@ class sts3032:
             if abs(scs_present_position-self.raw_angle_current)>3500:
                 self.turn_num=self.turn_num+int(np.sign(self.raw_angle_current-scs_present_position))
             self.raw_angle_current=scs_present_position
-            self.angle_current=scs_present_position+4096*self.turn_num
+            self.angle_current=scs_present_position+COUNTS_PER_TURN*self.turn_num
 
             scs_present_status=scs_present_status&0x0001
             if i%10==0:
@@ -138,7 +151,7 @@ class sts3032:
                 break
 
     def home(self):
-        self.set_position(2048)
+        self.set_position(ENCODER_CENTER)
 
     def torque_disable(self):
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(self.portHandler, self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 0)
@@ -160,7 +173,7 @@ class Servoset:
         self.board_id=board_id
         self.servo_channel_list = servo_channel_list
         self.timeout = 10
-        self.de_hysterisis = True
+        self.de_hysterisis = DE_HYSTERESIS
 
         self.refresh()
 
@@ -249,13 +262,13 @@ class Servoset:
                 message="Loaded, the positions are: \n"
                 for i in range(len(self.multi_position_list)):
                     message+=self.servo_list[i].message
-                    message+=str((self.multi_position_list[i]-2048)*360/4096)+' deg\t'
+                    message+=str((self.multi_position_list[i]-ENCODER_CENTER)*DEGREES_PER_TURN/COUNTS_PER_TURN)+' deg\t'
                 logging.info(message)
             except Exception as e:
                 logging.error(f"Error loading position from disk: {e}")
         else:
             logging.info("No position data found on disk")
-            self.multi_position_list = list(np.ones(len(self.SCS_ID_list))*2048)
+            self.multi_position_list = list(np.ones(len(self.SCS_ID_list))*ENCODER_CENTER)
             # create new file
             self.save()
 
@@ -276,7 +289,7 @@ class Servoset:
                 iteration+=1
         #Set turn number to be zero when we set zero on all the motors.
         self.turn_num=[0]*len(self.SCS_ID_list)
-        self.multi_position_list=[2048]*len(self.SCS_ID_list)
+        self.multi_position_list=[ENCODER_CENTER]*len(self.SCS_ID_list)
         self.save()
 
 
@@ -290,7 +303,7 @@ class Servoset:
 
     def home(self):
         logging.info('going home')
-        goal_position_list=np.ones(len(self.SCS_ID_list))*2048
+        goal_position_list=np.ones(len(self.SCS_ID_list))*ENCODER_CENTER
         self.set_position(goal_position_list)
 
     def set_group_sync_read(self, groupSyncRead):
@@ -362,7 +375,7 @@ class Servoset:
             goal_position_list = [goal_position_list[i] if pos_mask[i] else self.multi_position_list[i] for i in range(len(goal_position_list))]
         goal_position_list = [int(goal_position) for goal_position in list(goal_position_list)]
         #
-        POS_THRESHOLD = 2
+        POS_THRESHOLD = DEHYS_THRESHOLD
         # always go to plus direction, if goes to negative, then first go to more negative, then go to positive
         de_hysterisis_mask = [0]* len(self.SCS_ID_list)
         for i in range(len(self.SCS_ID_list)):
@@ -374,7 +387,7 @@ class Servoset:
             self._set_position(goal_position_list)
         else:
             # print(de_hysterisis_mask,goal_position_list)
-            goal_position_list_deh = [x-100 if de_hysterisis_mask[i] else x for i,x in enumerate(goal_position_list)]
+            goal_position_list_deh = [x-DEHYS_OVERSHOOT if de_hysterisis_mask[i] else x for i,x in enumerate(goal_position_list)]
             logging.debug('De-hysterisis On')
             logging.debug("First go to {} and then go to {}".format(goal_position_list_deh,goal_position_list))
             self._set_position(goal_position_list_deh)
@@ -432,11 +445,11 @@ class Servoset:
 
     def angle_to_position(self, angle):
         angle=np.array(angle)
-        return (angle*(4096/360)+2048).astype(int)
+        return (angle*(COUNTS_PER_TURN/DEGREES_PER_TURN)+ENCODER_CENTER).astype(int)
 
     def position_to_angle(self, position):
         position=np.array(position)
-        return ((position-2048)*360/4096).astype(float)
+        return ((position-ENCODER_CENTER)*DEGREES_PER_TURN/COUNTS_PER_TURN).astype(float)
 
     def set_angle(self, goal_angle_list,pos_mask=None):
         goal_position_list = self.angle_to_position(goal_angle_list)
@@ -468,7 +481,7 @@ class Servoset:
         self.portHandler.closePort()
 
 if __name__ == '__main__':
-    servos = Servoset(0,[0,1,2,3,4,5,6,7])
+    servos = Servoset(SERVER["board_id"], SERVO_CHANNEL_LIST)
     servos.random_play()
     # servos.set_angle([50,-50])
     # servos.set_angle([30])
