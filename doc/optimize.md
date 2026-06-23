@@ -17,11 +17,11 @@ From the developer notes, the staging is implemented in
   horizontal and vertical subspaces, by contrast, are nearly independent of
   each other, so little is lost by optimizing them separately.
 
-## Iterating between knob pairs - a mimic of human alignment procedure
+## Iterating between near-degenerate knob pairs - a mimic of human alignment procedure
 
-Because the two knobs of a pair are coupled, optimizing one pair shifts the
-optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and
-watch the cloud tighten around the peak over successive passes:
+We use "x" and "xdot" to denote the horizontal position and angle knobs, and "y" and "ydot" for the vertical pair. The two pairs are nearly independent, but each pair is coupled: moving one knob shifts the optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and watch the cloud tighten around the peak over successive passes:
+
+<!-- Because the two knobs of a pair are coupled, optimizing one pair shifts the optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and watch the cloud tighten around the peak over successive passes: -->
 
 | 1st pass | 2nd pass |
 |---|---|
