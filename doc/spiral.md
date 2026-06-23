@@ -48,7 +48,7 @@ Per step (`step_rdxy` → sample → `step_x0y0`):
 
 The search stops after `SPIRAL_RESOLUTION · SPIRAL_SPAN` iterations. The spiral is **2D only** — `pts_iterator` asserts `N_var == 2` for `method="spiral"`.
 
-Tuned parameters live in `step_optimize.py` (`spiral_params`): `I_meaningful`, `D`, `SPIRAL_RESOLUTION`, `SPIRAL_SPAN`, `COEF_I_RESET_ORIGIN`, `alpha`, …
+Note that the spiral only intends to give a good starting point for a full-dimensional optimizer (e.g., L-BFGS-B). It is a cheap way for our physical device to search a large enough 2D subspace to find a promising region, without wasting motor travel on a full grid or random scatter.
 
 ## Where it all plugs together
 

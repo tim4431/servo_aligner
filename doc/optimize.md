@@ -1,29 +1,23 @@
 # One Optimization Round — Iterating Between Knob Pairs
 
-[spiral.md](spiral.md) describes the 2D **spiral descent** search used on a
-single pair of knobs. This note describes how those 2D searches are **staged
-into a full optimization round** over one beam path's four knobs
-(`x, y, xdot, ydot`): first spiral passes in well-chosen 2D subspaces, then one
-full **4D L-BFGS-B** polish at the end. These are ingredients **C** (iterate
-between pairs of knobs) and **D** (finish with a gradient step) from the
-developer notes; the staging is implemented in
+[spiral.md](spiral.md) describes the 2D **spiral descent** search used on a single pair of knobs.
+This note describes how those 2D searches are **staged into a full optimization round** over one beam path's four knobs (`x, y, xdot, ydot`): first spiral passes in well-chosen 2D subspaces, then one
+full **4D L-BFGS-B** polish at the end. These are ingredients **C** (iterate between pairs of knobs) and **D** (finish with a gradient step)
+From the developer notes, the staging is implemented in
 [`calibrate_jacobian.py`](../src/calibrate_jacobian.py) via
 [`step_optimize`](../src/step_optimize.py).
 
-## Why 2D pairs instead of all four knobs at once?
+## Why 2D pairs?
 
-- **The spiral is 2D-only.** `pts_iterator` asserts `N_var == 2` for
-  `method="spiral"` — a space-filling spiral has no useful high-dimensional
-  analogue: the number of samples (= motor travel) needed to "fill" the space
-  explodes with dimension.
-- **The knobs are coupled in known pairs.** Horizontally, the position knob `x`
+- **A low-dimensional search is more efficient.** The number of samples (= motor travel) needed to "fill" the high-dimensional space grows exponentially with dimension.
+- ** Horizontally, the position knob `x`
   and the angle knob `xdot` steer the same beam coordinate, so they form a
   tilted, elongated ridge — exactly the landscape the spiral handles well; the
   same holds for `y` / `ydot` vertically (see [jacobian.md](jacobian.md)). The
   horizontal and vertical subspaces, by contrast, are nearly independent of
   each other, so little is lost by optimizing them separately.
 
-## Iterating between knob pairs
+## Iterating between knob pairs - a mimic of human alignment procedure
 
 Because the two knobs of a pair are coupled, optimizing one pair shifts the
 optimum of the other. So we **alternate** `X_XDOT` ↔ `Y_YDOT` (ingredient C) and

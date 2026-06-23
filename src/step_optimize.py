@@ -2,20 +2,21 @@ import numpy as np
 from pts_iterator import pts_iterator
 import logging
 from servo_util import format_para, nraddr
+from spiral import SpiralPathConfig
 
 #
-spiral_params = {
-    'I_meaningful': 0.005,
-    'D': 2.4,
-    'SPIRAL_RESOLUTION': 14,
-    'SPIRAL_SPAN': 6,
-    'SINGLE_SPIRAL_SPAN': 3.5,
-    'N_LOOPS_BEFORE_RESET_ORIGIN': 0.5,
-    'MAX_X0Y0_DISPLACEMENT': 10,
-    'COEF_I_RESET_ORIGIN': 1.4,
-    'alpha': 0.03,
-    'COEF_I_DECAY': 0.995
-}
+spiral_params = SpiralPathConfig(
+    I_meaningful=0.005,
+    D=2.4,
+    SPIRAL_RESOLUTION=14,
+    SPIRAL_SPAN=6,
+    SINGLE_SPIRAL_SPAN=3.5,
+    N_LOOPS_BEFORE_RESET_ORIGIN=0.5,
+    MAX_X0Y0_DISPLACEMENT=10,
+    COEF_I_RESET_ORIGIN=1.4,
+    alpha=0.03,
+    COEF_I_DECAY=0.995,
+)
 BFGS_params = {"disp": True, "maxiter": 10,  "eps": 5}
 #
 
