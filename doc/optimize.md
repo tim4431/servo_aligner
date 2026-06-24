@@ -75,10 +75,11 @@ against ending a noisy search on a bad point. On commit, the reduced result is
 added into the full 8-vector (`nraddr`); otherwise `zero` passes through
 unchanged.
 
-`pts_iterator` dispatches each stage to `"spiral"` (default, tuned via the
-`spiral:` section of [`calibration.yaml`](../config/calibration.template.yaml),
-loaded into `spiral_params` in [`step_optimize.py`](../src/step_optimize.py)),
-`"L-BFGS-B"`, or `"Powell"`, and records/plots every `(para, intensity)` sample.
+`pts_iterator` (in [`step_optimize.py`](../src/step_optimize.py)) dispatches each
+stage to `"spiral"` (default, tuned via the `spiral:` section of
+[`calibration.yaml`](../config/calibration.template.yaml), loaded into
+`spiral_params` in the same module), `"L-BFGS-B"`, or `"Powell"`, and records/plots
+every `(para, intensity)` sample.
 
 See also [spiral.md](spiral.md) for the 2D search itself, and
 [jacobian.md](jacobian.md) for how rounds are repeated over many master

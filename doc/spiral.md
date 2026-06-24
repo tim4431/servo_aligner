@@ -1,40 +1,34 @@
 # Spiral Descent — Optimizing Fiber Coupling
 
-This note explains **why** we use a custom "spiral descent" search to maximize fiber coupling (and beam alignment generally), and **how** it is implemented in [`src/spiral.py`](../src/spiral.py) / [`src/pts_iterator.py`](../src/pts_iterator.py) / [`src/step_optimize.py`](../src/step_optimize.py). How spiral stages are chained into a full optimization round is described in [optimize.md](optimize.md).
+This note explains **why** we use a custom "spiral descent" search to maximize fiber coupling (and beam alignment generally), and **how** it is implemented in [`src/spiral.py`](../src/spiral.py) / [`src/step_optimize.py`](../src/step_optimize.py) (which holds both `pts_iterator` and `step_optimize`). How spiral stages are chained into a full optimization round is described in [optimize.md](optimize.md).
 
 ## The optimization problem
 
-We turn a pair of mirror knobs and read a maximize an objective (here the objective is the fiber coupling, which is measured by a photodiode and sampled with an MCP3424 ADC). This optimization problem is awkward for off-the-shelf optimizers:
-
-- **For gradient-based methods:** The objective is noisy and the knobs are coupled, making it difficult to estimate gradients accurately.
-- **For stochastic methods:** The list of samples is usually scattered across the knob space. Unlike in computer science where function evaluations are cheap, here each sample requires moving the motors physically and waiting for them to stop. The motor travel time dominates the run, so random sampling is inefficient. Also, the sample points which are close together in space are often far apart in time, which adds slowly-drifting noise to the objective.
-
-
+We turn a pair of mirror knobs and read a maximize an objective (here the objective is the fiber coupling, which is measured by a photodiode and sampled with an MCP3424 ADC).
 ## Why not a standard optimizer?
+This optimization problem is awkward for off-the-shelf optimizers:
 
-We compared the usual candidates on the real coupling landscape:
+**For gradient-based methods:** The objective is noisy and the knobs are coupled, making it difficult to estimate gradients accurately.
+
+**For stochastic methods:**  We examine the behavior of several optimizer with experimental data from a real fiber-coupling optimization run.
+
+![comparison of different optimization methods](figs/optimization_methods_compare.svg)
 
 | Method | Behavior | Problem |
 |--------|----------|---------|
-| **Powell** | Coordinate-style line searches (the cross pattern below) | Gets stuck along the coupled ridge; many long traverses. |
-| **Differential evolution** | Random population scattered over the whole box | Huge total motor travel — it jumps all over the plane. |
-| **Gaussian fit** | Raster/sample then fit a 2D Gaussian to find the peak | Wastes travel on a full grid; the fit is biased when the spot is distorted ("fat tail"). |
+| **Powell** | Coordinate-style line searches |  Gets stuck along the coupled ridge |
+| **Differential evolution** | Random population scattered over the whole box | Huge total motor travel; waisting time. |
+| **Gaussian fit** | Raster 2D then fit a 2D Gaussian to find the peak | Wastes travel on a full grid |
 
-![Powell: coordinate line-search pattern](figs/optimize_powell.png)
-![Differential evolution: random scatter over the whole box](figs/optimize_differential_evolution.png)
-![Gaussian fit to a 2D raster scan](figs/optimize_gaussian_fit.png)
 
-The common failure is **wasted motor travel**: random or grid sampling ignores
-that adjacent-in-time samples should be adjacent-in-space to keep moves short.
+
+The common failure is **wasted motor travel**: The list of samples is usually scattered across the knob space. Unlike in computer science where function evaluations are cheap, here each sample requires moving the motors physically and waiting for them to stop. The motor travel time dominates the run, so random sampling is inefficient. Also, the sample points which are close together in space are often far apart in time, which adds slowly-drifting noise to the objective.
 
 ## The spiral descent idea
 
-The spiral itself has two ingredients (labels from the developer notes):
-
 - **A — space-filling spiral.** Sample along an Archimedean spiral that gradually fills the 2D plane. Consecutive points are *close together*, so total motor travel distance is minimized while still covering the area.
-- **B — drag the center toward higher objective.** The spiral's center `(x0, y0)` is continuously pulled in the direction of the objective-weighted centroid of recent samples — a noise-robust, gradient-like update. The search "flows uphill" while it scans.
+- **B — drag the spiral center toward higher objective.** The spiral's center `(x0, y0)` is continuously pulled in the direction of the objective-weighted centroid of recent samples — a noise-robust, gradient-like update. The search "flows uphill" while it scans.
 
-Two further ingredients — **C** (iterate between 2D knob pairs) and **D** (finish with a full-dimensional gradient step) — concern how spiral stages are *chained* into a full optimization round, not the spiral itself; see [optimize.md](optimize.md).
 
 ## How the spiral works (`SpiralPath` in [`spiral.py`](../src/spiral.py))
 
@@ -56,12 +50,13 @@ Note that the spiral only intends to give a good starting point for a full-dimen
   (`maximize(function, x0, bounds, options)`). Has a hardware-free matplotlib
   demo under `__main__` (maximizes a tilted 2D Gaussian) — the only way to see
   the algorithm run off the Pi.
-- **[`pts_iterator.py`](../src/pts_iterator.py) — `pts_iterator`**: dispatches to `"spiral"`,
+- **[`step_optimize.py`](../src/step_optimize.py) — `pts_iterator`**: dispatches to `"spiral"`,
   `"L-BFGS-B"`, or `"Powell"`, records every `(para, intensity)` sample, and
   plots the trace + convergence curve.
 - **[`step_optimize.py`](../src/step_optimize.py) — `step_optimize`**: runs one optimization stage on a
-  given `pos_mask`, then **only commits the new origin if the final intensity
-  stays ≥ 70 % of the best seen** (guards against ending on a bad/noisy point).
+  given `pos_mask` (calling `pts_iterator` in the same module), then **only commits
+  the new origin if the final intensity stays ≥ 70 % of the best seen** (guards
+  against ending on a bad/noisy point).
 
 How these stages are chained into a full optimization round — spiral passes on
 each coupled 2D knob-pair subspace, then a 4D **L-BFGS-B** finish — is

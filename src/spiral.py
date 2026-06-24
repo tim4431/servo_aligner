@@ -337,7 +337,7 @@ if __name__ == "__main__":
     y = np.linspace(-40, 40, 100)
     X, Y = np.meshgrid(x, y)
     Z = np.zeros(X.shape)
-    mu = np.array([8, 10])
+    mu = np.array([20, 10])
     cov = covariance_matrix(10, 4, np.pi / 3)
     #
     for i in range(X.shape[0]):
@@ -365,8 +365,7 @@ if __name__ == "__main__":
     sp = SpiralPath(config=demo_config)
     callback_function = lambda xy: gaussian2d(xy[0], xy[1], mu, cov)
     end = sp.maximize(callback_function, x0=(0, 0), bounds=[(-40, 40), (-40, 40)])
-    print(f"true peak at {tuple(mu)}, spiral ended at "
-          f"({end[0]:.1f}, {end[1]:.1f})")
+    print(f"true peak at {tuple(mu)}, spiral ended at " f"({end[0]:.1f}, {end[1]:.1f})")
 
     plt.plot(sp.pts_x, sp.pts_y, "r")
     plt.plot(sp.pts_x0, sp.pts_y0, "b")

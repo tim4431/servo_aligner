@@ -27,7 +27,7 @@ cp ../config/calibration.template.yaml ../config/calibration.yaml   # masks, acc
 | `sequence.py` / `SequenceProcessor.py` | Vendored expctl classes so the server can unpickle `Sequence` objects. |
 | `clip_scan.py` | 2D raster scan of knob pairs; fit beam-clip ellipse to find the center. |
 | `calibrate_jacobian.py` | Spiral + L-BFGS-B coupling optimization; derive the knob Jacobian. |
-| `step_optimize.py` / `pts_iterator.py` / `spiral.py` | Optimization engine (custom spiral descent + scipy minimizers). |
+| `step_optimize.py` / `spiral.py` | Optimization engine: `step_optimize` (one stage) and `pts_iterator` (optimizer dispatch) live in `step_optimize.py`; `spiral.py` is the custom spiral-descent search. |
 | `servo_util.py` / `servo_const.py` | Channel masks and the `r`/`nr`/`nd` vector helpers (`compose_para`, etc.). |
 | `fit_gaussian.py` / `motor_scan.py` / `numeric_sim.py` / `plot_csv.py` | Fitting, scanning, simulation, and plotting helpers. |
 
