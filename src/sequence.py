@@ -5,11 +5,8 @@ except:
   pass
 import colorsys
 import socket
-import pickle as pickle
-from utilities import jGlobals
 import numpy as np
 import math
-import time
 
 import coloredlogs, logging
 # Create a logger object.
@@ -191,7 +188,7 @@ class Sequence:
     plt_title = self.name if single_chan == None else self.name+": "+single_chan.name
     ax.set_title(plt_title, {'size': 20})
     plt.grid()
-    ax.set_xlabel("Time ($\mu s$)", {'size': 14}, labelpad=20)
+    ax.set_xlabel(r"Time ($\mu s$)", {'size': 14}, labelpad=20)
     ax.xaxis.label.set_color(almost_black)
     ax.yaxis.label.set_color(almost_black)
     ytick_labels = []
@@ -276,11 +273,9 @@ class Sequence:
           lastTime = chan.GetLastTime()       
           if (end_time > lastTime):
             chan.Set([(lastTime, lastVal, end_time, lastVal)]) # Hold at final value!
-            # print chan.name + " holding at " + str(lastVal) + " from " + str(lastTime) +" to "+str(end_time)
         else:#no values set yet
           val = chan.ssv
           chan.Set([(0, val, end_time, val)])
-          #print chan.name + " has no ramps. Seting to steady state value of "+str(val)
 
 #======================================================================#
 # Add a ramp at the beginning of each channel                          #
@@ -304,7 +299,6 @@ class Sequence:
       if chan != None:
         if len(chan._UserValues) == 0:
           chan.Set([(0, chan.ssv, 0, chan.ssv)])
-          #print "Channel "+str(chan.chanid)+" \""+chan.name+"\" has no ramps. Setting to steady state value of "+str(chan.steady_state_value)
           print("\""+chan.name+"\" has no ramps. Setting to steady state value of "+str(chan.ssv))
     #Add a ramp to hold the final value    
     
@@ -369,25 +363,6 @@ class Channel:
       v2 = self._transfunc_v(pair[3])
       newpair = Interval((t1, v1, t2, v2))
       self._TransValues.append(newpair)
-    # # # THIS WAS THE ORIGINAL CODE PRE-10/19/18; however, sorting and checking for conflicts every time is not worth 
-    # # # the enormous increase in run time due to terrible scaling of Set with the number of calls for a given channel
-    # # # therefore, Logan is changing the code to perform each of these ONCE per channel after the entire sequence
-    # # # has been processed: 
-    # # Sort by interval start time 
-    # self._UserValues  = sorted(self._UserValues,  key=lambda x:(x[0],x[2]))
-    # self._TransValues = sorted(self._TransValues, key=lambda x:(x[0],x[2]))
-    # # Check time confliction
-    # for x in xrange(0, len(self._UserValues)-1):
-    #   a1 = self._UserValues[x].start_t()
-    #   a2 = self._UserValues[x].end_t()
-    #   b1 = self._UserValues[x+1].start_t()
-    #   b2 = self._UserValues[x+1].end_t()
-    #   if (b1<a2) and (a1<b2):
-    #     raise SetError("Invalid Set() time for "+str(self.name)+". Conflicting intervals: ("+str(a1)+", "+str(a2)+") and ("+str(b1)+", "+str(b2)+").")
-    
-    # Update sequence stop time
-    #print(self._UserValues[0])    
-    #self.seq.TIME_STOP = max(self.seq.TIME_STOP, self._UserValues[-1][2])
     # SSV fix from ash
     if(self._UserValues):
       self.seq.TIME_STOP = max(self.seq.TIME_STOP, self._UserValues[-1][2])
@@ -586,12 +561,6 @@ class Channel:
 #======================================================================#
 ########################################################################
 class Interval(tuple):
-  def __init(self, *args, **kwargs):
-    tuple.__init__(self, args[0])
-    self.start_t = self[0]
-    self.start_V = self[1]
-    self.end_t = self[2]
-    self.end_V = self[3]
   def start_t(self):
     return self[0]
   def start_V(self):

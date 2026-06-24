@@ -17,21 +17,21 @@ Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and 
 1. **ZMQ server** — `STSServer.py` subclasses `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework. It listens on a ZMQ REP socket (port 60627), receives pickled `Sequence` objects (`sequence.py` is a vendored copy of the expctl class), and drives servos to the requested angles during the `QUEUE` phase. It also exposes an argparse CLI (`set_zero`, `home`, `set_angle`, `set_single`, `dehys`) parsed once at startup before entering the message loop.
 2. **Standalone scripts** — `clip_scan.py` and `calibrate_jacobian.py` are run directly as alignment/calibration routines (see Commands).
 
-In production the whole `src/` tree is dropped into the expctl package as `expctl.servers.servoaligner` (note the `python -m expctl.servers.servoaligner.X` invocations and the `home_folder` path in `machine.yaml`). Run standalone, scripts use flat imports (`from servodriver import Servoset`) and must be launched from inside `src/`.
+In production the whole `src/` tree is dropped into the expctl package as `expctl.servers.servoaligner` (note the `python -m expctl.servers.servoaligner.X` invocations); the `config/` dir and `state_folder` are set per deployment via `config/machine.yaml` (or `$SERVO_ALIGNER_CONFIG_DIR`). Run standalone, scripts use flat imports (`from servodriver import Servoset`) and must be launched from inside `src/`.
 
 ## Setup
 
-All machine- and setup-specific values live in **two gitignored YAML files**, loaded once by `config.py` (requires PyYAML). Create them from the checked-in templates:
+All machine- and setup-specific values live in **two gitignored YAML files** under `config/` (sibling of `src/`, not inside it), loaded once by `config.py` (requires PyYAML). Create them from the checked-in templates:
 
 ```bash
-cp src/machine.template.yaml     src/machine.yaml       # hardware / software
-cp src/calibration.template.yaml src/calibration.yaml   # optics / calibration
+cp config/machine.template.yaml     config/machine.yaml       # hardware / software
+cp config/calibration.template.yaml config/calibration.yaml   # optics / calibration
 ```
 
-- **`machine.yaml`** — per-Pi hardware/software: serial `devices`/`baudrate`, servo `speed`/`acc`, the `de_hysteresis` tuning, the `channels` map (list order = channel index, each `{id, name}`), the `adc` I2C wiring (MCP3424 bus/address/channel/gain), filesystem `paths` (`home_folder`, `data_folder`), and the ZMQ `server` (`name`/`port`/`board_id`).
+- **`machine.yaml`** — per-Pi hardware/software: serial `devices`/`baudrate`, servo `speed`/`acc`, the `de_hysteresis` tuning, the `channels` map (list order = channel index, each `{id, name}`), the `adc` I2C wiring (MCP3424 bus/address/channel/gain), filesystem `paths` (`state_folder`, `data_folder`), and the ZMQ `server` (`name`/`port`/`board_id`).
 - **`calibration.yaml`** — optics-setup/calibration-dependent: the channel grouping `masks`, beam-clip `accept_functions`, Jacobian `coupling_vectors`, and optimizer tuning (`spiral`, `bfgs`, `clip_scan`, `jacobian`).
 
-`config.py` reads both at import and exposes the values as module constants (`DEVICENAME_LIST`, `sts3032_dict`, `MASKS`, `SPIRAL_PARAMS`, …); file locations can be overridden with the `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` env vars. STS3032-fixed constants (control-table addresses; the `2048`/`4096` encoder geometry in `servo_util.py`) stay in code, not YAML. `servos_0.json` persists the last-known encoder positions across restarts and is rewritten on every move and at exit (`atexit`).
+`config.py` searches for the files in `$SERVO_ALIGNER_CONFIG_DIR`, then `<repo>/config`, then next to `config.py` (production fallback); per-file paths can also be overridden with `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG`. It exposes the values as module constants (`DEVICENAME_LIST`, `sts3032_dict`, `STATE_FOLDER`, `MASKS`, …); relative `paths` resolve against the repo root. STS3032-fixed constants (control-table addresses; the `2048`/`4096` encoder geometry in `servo_util.py`) stay in code, not YAML. Runtime state `servos_<board>.json` lives under `state_folder` (outside `src/`), persisting encoder positions across restarts; it is rewritten on every move and at exit (`atexit`).
 
 ## Commands
 

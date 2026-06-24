@@ -11,7 +11,7 @@ Raspberry Pi  →  URT / serial driver board  →  servo 1 → servo 2 → … (
 
 Servos share one serial bus and are addressed by **ID** (not by position on the
 chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in
-[`machine.yaml`](../src/machine.template.yaml) (`servo.channels`).
+[`machine.yaml`](../config/machine.template.yaml) (`servo.channels`).
 
 Default bus settings: **baudrate 1 000 000**,
 
@@ -83,13 +83,13 @@ Set the **min and max position limits to `0, 0`** (not `0, 4095`):
 | Addr | Name | Used for |
 |-----:|------|----------|
 | 40 | `TORQUE_ENABLE`    | `1` enable, `0` disable torque. Writing **`128`** triggers the **set-zero / mid-point calibration** (`set_zero`). |
-| 41 | `GOAL_ACC`         | Goal acceleration (`servo.acc` from [`machine.yaml`](../src/machine.template.yaml)). |
+| 41 | `GOAL_ACC`         | Goal acceleration (`servo.acc` from [`machine.yaml`](../config/machine.template.yaml)). |
 | 42 | `GOAL_POSITION`    | Target position (written via group-sync-write for all servos at once). |
-| 46 | `GOAL_SPEED`       | Goal speed (`servo.speed` from [`machine.yaml`](../src/machine.template.yaml)). |
+| 46 | `GOAL_SPEED`       | Goal speed (`servo.speed` from [`machine.yaml`](../config/machine.template.yaml)). |
 | 56 | `PRESENT_POSITION` | Current position (group-sync-read; basis for turn counting). |
 | 66 | `MOVING_STATUS`    | `0` when the servo has stopped — used to know a move finished. |
 
-Speed/acceleration defaults come from [`machine.yaml`](../src/machine.template.yaml)
+Speed/acceleration defaults come from [`machine.yaml`](../config/machine.template.yaml)
 (`servo.speed`, `servo.acc`); per-servo overrides are possible via `set_speed` / `set_acc`.
 
 ## De-hysteresis (backlash compensation)
@@ -113,7 +113,7 @@ servo it compares the goal to the current position:
 
 The `threshold` (default 2) and `overshoot` (default 100) steps, plus the default
 on/off state, are set under `servo.de_hysteresis` in
-[`machine.yaml`](../src/machine.template.yaml) — tune them to the physical mount.
+[`machine.yaml`](../config/machine.template.yaml) — tune them to the physical mount.
 
 
 ### Toggling it

@@ -21,15 +21,15 @@ getting-started PDF are in [`files/`](files/)).
 ## 2. Configure the YAML files
 
 All machine- and setup-specific values live in **two gitignored YAML files** in
-`src/`, loaded once by [`config.py`](../src/config.py). Create them from the
-checked-in templates:
+`config/` (a sibling of `src/`, kept out of the source tree), loaded once by
+[`config.py`](../src/config.py). Create them from the checked-in templates:
 
 ```bash
-cp src/machine.template.yaml     src/machine.yaml
-cp src/calibration.template.yaml src/calibration.yaml
+cp config/machine.template.yaml     config/machine.yaml
+cp config/calibration.template.yaml config/calibration.yaml
 ```
 
-### [`machine.yaml`](../src/machine.template.yaml) — hardware / software (per machine)
+### [`machine.yaml`](../config/machine.template.yaml) — hardware / software (per machine)
 
 | Section | Meaning |
 |---------|---------|
@@ -39,8 +39,8 @@ cp src/calibration.template.yaml src/calibration.yaml
 | `servo.de_hysteresis` | Backlash compensation tuned to the physical mount: `enabled`, `overshoot` (steps), `threshold`. |
 | `servo.channels` | The channel map — a list of `{id, name}`. **List order defines the channel index** and thus the 8-element vectors used everywhere (masks, angles). |
 | `adc` | MCP3424 I2C wiring: `i2c_bus`, `address`, `channel`, `gain`, `resolution`. |
-| `paths.home_folder` | Absolute folder where `servos_<board>.json` (saved positions) lives. In production this is the installed package path. |
-| `paths.data_folder` | Base folder for scan/calibration output (scripts create subfolders under it). |
+| `paths.state_folder` | Folder where the runtime `servos_<board>.json` (saved positions) lives — kept out of `src/`, created automatically. Relative paths resolve against the repo root; use an absolute path in production. |
+| `paths.data_folder` | Base folder for scan/calibration output (scripts create subfolders under it). Same relative/absolute rule. |
 | `server` | ZMQ server identity: `name`, `port`, `board_id`. |
 
 > `servo.channels` is the source of truth for the channel layout. The default maps
@@ -48,7 +48,7 @@ cp src/calibration.template.yaml src/calibration.yaml
 > show how to extend it. Channel **index** (list position) is distinct from servo
 > **ID** (bus address) — keep both correct.
 
-### [`calibration.yaml`](../src/calibration.template.yaml) — optics / calibration (per setup)
+### [`calibration.yaml`](../config/calibration.template.yaml) — optics / calibration (per setup)
 
 | Section | Meaning |
 |---------|---------|
@@ -58,14 +58,18 @@ cp src/calibration.template.yaml src/calibration.yaml
 | `spiral`, `bfgs` | Optimizer tuning (spiral-descent + L-BFGS-B). |
 | `clip_scan`, `jacobian` | Scan/calibration knobs: output subfolders, point counts, scan ranges, probe magnitude. |
 
-The file locations default to `src/`; override them with the
-`SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` environment
+`config.py` looks for the files in `$SERVO_ALIGNER_CONFIG_DIR`, then `<repo>/config`,
+then next to `config.py` (a production fallback); individual paths can be overridden
+with the `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` environment
 variables. Constants fixed by the STS3032 itself (control-table addresses, the
 `2048`/`4096` encoder geometry) are **not** in YAML — they stay in code.
 
-`servos_0.json` is created automatically on first run and rewritten on every move
-and at exit; it lets software turn-counting survive a program restart (but not a
-driver-board power loss). A template is in `doc/servos_template.json`.
+`servos_<board>.json` (under `state_folder`) is created automatically on first run
+and rewritten on every move and at exit; it lets software turn-counting survive a
+program restart (but not a driver-board power loss). It records `board_id`, a
+timestamp, the servo **IDs** (bus addresses) and the positions; on load, a
+mismatching servo count or ID list is reported and stale positions are ignored. A
+template is in [`servos_template.json`](servos_template.json).
 
 ## 3. Two ways to run
 

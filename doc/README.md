@@ -12,8 +12,8 @@ photodiode as feedback. Suggested reading order:
 7. [application.md](application.md) — beam centering (clip scan) & MOT alignment
 8. [simulation.md](simulation.md) — hardware-free models and the optimizer test bed
 
-Config templates live next to the code: [`../src/machine.template.yaml`](../src/machine.template.yaml)
-and [`../src/calibration.template.yaml`](../src/calibration.template.yaml) (copy to
-`machine.yaml` / `calibration.yaml`). Also here:
+Config templates live in [`../config/`](../config/): [`machine.template.yaml`](../config/machine.template.yaml)
+and [`calibration.template.yaml`](../config/calibration.template.yaml) (copy to
+`config/machine.yaml` / `config/calibration.yaml`). Also here:
 [servos_template.json](servos_template.json) (saved-position template) and
 [files/](files/) (FEETECH vendor tools/manual).

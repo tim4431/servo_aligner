@@ -16,7 +16,7 @@ from config import (
     BAUDRATE,
     SERVO_SPEED,
     SERVO_ACC,
-    HOME_FOLDER,
+    STATE_FOLDER,
     sts3032_dict,
     SERVO_CHANNEL_LIST,
     SERVER,
@@ -24,6 +24,7 @@ from config import (
     DEHYS_OVERSHOOT,
     DEHYS_THRESHOLD,
 )
+from datetime import datetime
 from servo_util import ENCODER_CENTER, COUNTS_PER_TURN, DEGREES_PER_TURN
 
 
@@ -193,7 +194,8 @@ class Servoset:
         for servo in self.servo_list:
             self.SCS_ID_list.append(servo.SCS_ID)
         #
-        self.file = Path(HOME_FOLDER+"servos_{:s}.json".format(str(self.board_id)))
+        self.file = Path(STATE_FOLDER) / "servos_{:s}.json".format(str(self.board_id))
+        self.file.parent.mkdir(parents=True, exist_ok=True)
         self.load()
         #
         # Initialize GroupSyncRead instace for Present Position
@@ -246,11 +248,18 @@ class Servoset:
             raise Exception("None of the device is working!")
 
     def save(self):
-        # persist encoder position to file when programm is closed
-        dct = {'position': self.multi_position_list, 'angles_deg': list(self.position_to_angle(self.multi_position_list))}
-        self.file.write_text(json.dumps(dct))
-        # with self.file.open("a") as f:
-        #     f.write(json.dumps(dct))
+        # Persist encoder positions so software turn-counting survives a restart.
+        # `position` is authoritative; the rest is metadata for humans and for a
+        # stale-state sanity check on load.
+        positions = [int(p) for p in self.multi_position_list]
+        dct = {
+            'board_id': self.board_id,
+            'saved_at': datetime.now().isoformat(timespec='seconds'),
+            'servo_ids': list(self.SCS_ID_list),
+            'position': positions,
+            'angles_deg': [round(float(a), 4) for a in self.position_to_angle(positions)],
+        }
+        self.file.write_text(json.dumps(dct, indent=2))
 
     def load(self):
         if self.file.exists():  # load existing data
@@ -258,7 +267,19 @@ class Servoset:
             try:
                 # load position from file
                 dct = json.loads(self.file.read_text())
-                self.multi_position_list = dct['position']
+                positions = dct['position']
+                # Stale-state guard: the channel map changed since this was saved.
+                if len(positions) != len(self.SCS_ID_list):
+                    logging.warning("Saved state has %d positions but %d servos are connected; "
+                                    "ignoring stale file and centering.", len(positions), len(self.SCS_ID_list))
+                    self.multi_position_list = list(np.ones(len(self.SCS_ID_list))*ENCODER_CENTER)
+                    self.save()
+                    return
+                saved_ids = dct.get('servo_ids')
+                if saved_ids is not None and list(saved_ids) != list(self.SCS_ID_list):
+                    logging.warning("Saved servo IDs %s differ from connected %s; positions may be stale.",
+                                    saved_ids, self.SCS_ID_list)
+                self.multi_position_list = positions
                 message="Loaded, the positions are: \n"
                 for i in range(len(self.multi_position_list)):
                     message+=self.servo_list[i].message

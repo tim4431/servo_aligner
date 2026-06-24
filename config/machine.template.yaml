@@ -55,12 +55,13 @@ adc:
   resolution: 16
 
 # --- Filesystem paths --------------------------------------------------------
+# Relative paths resolve against the repo root; use absolute paths in production.
 paths:
-  # Where servos_<board>.json (persisted encoder positions) is read/written.
-  # In production this is the installed package directory.
-  home_folder: /home/rydpiservo/expctl/src/expctl/servers/servoaligner/
+  # Runtime state: servos_<board>.json (persisted encoder positions) is read /
+  # written here. Kept OUT of the source tree. Created automatically if missing.
+  state_folder: state
   # Base directory for scan / calibration output (scripts create subfolders).
-  data_folder: /home/rydpiservo/servodata/
+  data_folder: data
 
 # --- ZMQ server identity -----------------------------------------------------
 server:

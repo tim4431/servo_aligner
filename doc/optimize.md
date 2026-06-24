@@ -76,7 +76,7 @@ added into the full 8-vector (`nraddr`); otherwise `zero` passes through
 unchanged.
 
 `pts_iterator` dispatches each stage to `"spiral"` (default, tuned via the
-`spiral:` section of [`calibration.yaml`](../src/calibration.template.yaml),
+`spiral:` section of [`calibration.yaml`](../config/calibration.template.yaml),
 loaded into `spiral_params` in [`step_optimize.py`](../src/step_optimize.py)),
 `"L-BFGS-B"`, or `"Powell"`, and records/plots every `(para, intensity)` sample.
 

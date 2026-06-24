@@ -6,20 +6,20 @@ Control software for FEETECH **STS3032** serial-bus servo motors driving optical
 
 ## Setup
 
-Configuration lives in two gitignored YAML files, loaded by [`config.py`](config.py) (needs PyYAML). Create them from the checked-in templates:
+Configuration lives in two gitignored YAML files under [`../config/`](../config/) (a sibling of `src/`), loaded by [`config.py`](config.py) (needs PyYAML). Create them from the checked-in templates:
 
 ```bash
-cp machine.template.yaml     machine.yaml       # serial bus, channel map, ADC, paths, server
-cp calibration.template.yaml calibration.yaml   # masks, accept functions, coupling vectors, optimizer tuning
+cp ../config/machine.template.yaml     ../config/machine.yaml       # serial bus, channel map, ADC, paths, server
+cp ../config/calibration.template.yaml ../config/calibration.yaml   # masks, accept functions, coupling vectors, optimizer tuning
 ```
 
-`machine.yaml` holds per-machine hardware/software settings; `calibration.yaml` holds optics-setup/calibration values. Override their paths with `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG` if needed. `servos_0.json` persists the last encoder positions between runs.
+`machine.yaml` holds per-machine hardware/software settings; `calibration.yaml` holds optics-setup/calibration values. `config.py` finds them via `$SERVO_ALIGNER_CONFIG_DIR` → `<repo>/config` → next to `config.py`; per-file overrides via `SERVO_ALIGNER_MACHINE_CONFIG` / `SERVO_ALIGNER_CALIB_CONFIG`. Runtime `servos_<board>.json` is written under `state_folder` (outside `src/`), persisting encoder positions between runs.
 
 ## Layout
 
 | File | Role |
 |------|------|
-| `config.py` + `machine.yaml` / `calibration.yaml` | Loads the two YAML config files (machine hardware/software vs. optics/calibration) and exposes them as constants. Edit the YAML, not the code, when migrating. |
+| `config.py` (+ `../config/*.yaml`) | Loads the two YAML config files (machine hardware/software vs. optics/calibration) from `../config/` and exposes them as constants. Edit the YAML, not the code, when migrating. |
 | `servodriver.py` | `sts3032` (single motor) and `Servoset` (the 8-motor set): connect, move, multi-turn tracking, de-hysteresis, position persistence. |
 | `pd.py` | Photodiode ADC reader (MCP3424 over I2C) — the optimization signal. |
 | `scservo_sdk/` | Vendored FEETECH serial-servo SDK (do not edit). |

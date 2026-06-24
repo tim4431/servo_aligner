@@ -1,12 +1,8 @@
 #!/usr/bin/python
 import sys
-from signal import signal, SIGINT
-from sys import exit
 import zmq
 from pickle import dumps, loads
-#from utilities.util import *
 import sequence
-import math
 import time
 import numpy as np
 import coloredlogs, logging
@@ -150,11 +146,6 @@ def DataForPlot(seq):
 def RunServer(seq, autostart = 1):
 	time.sleep(0.11)
 	return 0.11
-
-def handler(signal_received, frame):
-	# Handle any cleanup here
-	print('SIGINT or CTRL-C detected. Exiting gracefully')
-	exit(0)
 
 if __name__ == '__main__':
 
