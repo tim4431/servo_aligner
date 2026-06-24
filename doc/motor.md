@@ -9,16 +9,12 @@ mirror-mount knobs.
 Raspberry Pi  →  URT / serial driver board  →  servo 1 → servo 2 → … (daisy chain)
 ```
 
-Servos share one serial bus and are addressed by **ID** (not by position on the
-chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in
-[`machine.yaml`](../config/machine.template.yaml) (`servo.channels`).
-
+Servos share one serial bus and are addressed by **ID** (not by position on the chain). The Pi-side mapping of *channel index → [servo ID, name]* lives in [`machine.yaml`](../config/machine.template.yaml) (`servo.channels`).
 Default bus settings: **baudrate 1 000 000**,
 
 ## Encoder & angle convention
 
-The magnetic encoder reports an integer position. A single turn spans
-**0 – 4095**, with **2048 = center (0°)**:
+The magnetic encoder reports an integer position. A single turn spans  – 4095**, with **2048 = center (0°)**:
 
 ```
 angle_deg = (position - 2048) * 360 / 4096      # position_to_angle
@@ -32,13 +28,8 @@ So one encoder step ≈ 0.088°, and one full knob turn = 4096 steps.
 
 A knob often needs **more than one turn**. There are two ways to track it:
 
-1. **Software turn counting** (default fallback) — `Servoset` watches for large
-   jumps in the raw 0–4095 reading (a wrap from ~4095→0 or back) and increments
-   an internal `turn_num`, so `angle_current = raw + 4096 * turn_num`. See
-   `sts3032.set_position` in [`src/servodriver.py`](../src/servodriver.py).
-2. **Hardware multi-turn reporting** — set **Register 18** as below; the servo
-   then reports the full multi-turn angle directly. This is more robust and is
-   the recommended setup.
+1. **Software turn counting** (default fallback) — `Servoset` watches for large jumps in the raw 0–4095 reading (a wrap from ~4095→0 or back) and increments an internal `turn_num`, so `angle_current = raw + 4096 * turn_num`. See `sts3032.set_position` in [`src/servodriver.py`](../src/servodriver.py).
+2. **Hardware multi-turn reporting** — set **Register 18** as below; the servo then reports the full multi-turn angle directly. This is more robust and is the recommended setup.
 
 > ⚠️ Either way, **a power loss on the driver board resets the turn count.**
 > After a power cycle, re-zero / re-home before trusting absolute angles.
@@ -53,8 +44,7 @@ Register 18 (相位设置, "phase setting") is a bit-field. The bit we care abou
 
 ![Register 18 bit layout; BIT4 (feedback mode) is the one to change](figs/register18_phase_setting.png)
 
-The factory default for this register is **108** (`0b0110_1100`). Setting BIT4
-turns it into **124** (`0b0111_1100`):
+The factory default for this register is **108** (`0b0110_1100`). Setting BIT4 turns it into **124** (`0b0111_1100`):
 
 ```
 108  =  0b0110_1100   (single-turn feedback)
@@ -63,18 +53,14 @@ turns it into **124** (`0b0111_1100`):
 
 With **124** the servo reports roughly **−180° … +2700°** (≈ ±7.5 turns).
 
-**How to change it:** connect the servo with FEETECH's **FD** debugging tool
-(`FD1.9.8.2`, in the Notion export under `tmp/`), open the Register-18 view,
-change the displayed value from 108 to 124, and write it to the servo.
+**How to change it:** connect the servo with FEETECH's **FD** debugging tool (`FD1.9.8.2`, in the Notion export under `tmp/`), open the Register-18 view, change the displayed value from 108 to 124, and write it to the servo.
 
 ## Min / Max position registers
 
 Set the **min and max position limits to `0, 0`** (not `0, 4095`):
 
 - With `0, 4095` the servo **cannot travel below −180°**.
-- With `0, 0` travel below −180° is allowed; in this mode going to **−180° is
-  equivalent to going to +2700°** (the limits are effectively disabled and the
-  multi-turn range is used).
+- With `0, 0` travel below −180° is allowed; in this mode going to **−180° is equivalent to going to +2700°** (the limits are effectively disabled and the multi-turn range is used).
 
 ## Control-table registers used by the driver
 

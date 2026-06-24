@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 
 from servodriver import Servoset
-from servo_util import nraddr, compose_para
+from servo_util import nraddr
 from fit_gaussian import (
     gaussian_2d,
     gaussian_2d_smooth_heaviside,
@@ -31,8 +31,7 @@ from servo_const import (
     POS_ALL_MASK,
     posmask2str,
 )
-from pd import MCP3424_fiber
-from step_optimize import step_optimize
+from callback_functions import make_callback_func, intensity_adc
 from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, ACCEPT_FUNCTIONS, CLIP_SCAN
 
 servos = Servoset(board_id=SERVER["board_id"], servo_channel_list=SERVO_CHANNEL_LIST)
@@ -46,25 +45,8 @@ os.makedirs(FOLDER, exist_ok=True)
 I_meaningful = CLIP_SCAN.get("I_meaningful", 0.1)
 
 
-def callback_func(
-    para, pos_mask, zero=None, jac=None, jac_master_mask=None, debug=False, **kwargs
-):
-
-    para_nr_move = compose_para(
-        para, pos_mask, zero, jac, jac_master_mask, debug=debug, **kwargs
-    )
-    #
-    if not debug:
-        servos.set_angle(list(para_nr_move))
-        #
-        data_cache = []
-        for m in range(2):
-            # data = ADS1115_fiber.value
-            data = MCP3424_fiber.convert_and_read()
-            data_cache.append(data)
-        z = float(np.mean(np.array(data_cache)))
-        # print(para,z)
-        return tuple(para), z
+# Objective: photodiode intensity over the ADC (see callback_functions.OBJECTIVES).
+callback_func = make_callback_func(servos, intensity_adc)
 
 
 def accept_func_linearxy(xy, slope, b, tol):

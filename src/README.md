@@ -21,7 +21,7 @@ cp ../config/calibration.template.yaml ../config/calibration.yaml   # masks, acc
 |------|------|
 | `config.py` (+ `../config/*.yaml`) | Loads the two YAML config files (machine hardware/software vs. optics/calibration) from `../config/` and exposes them as constants. Edit the YAML, not the code, when migrating. |
 | `servodriver.py` | `sts3032` (single motor) and `Servoset` (the 8-motor set): connect, move, multi-turn tracking, de-hysteresis, position persistence. |
-| `pd.py` | Photodiode ADC reader (MCP3424 over I2C) — the optimization signal. |
+| `callback_functions.py` | The optimizer objectives: the MCP3424 photodiode ADC reader (over I2C), an `OBJECTIVES` registry (`intensity_adc`, …), and `make_callback_func(servos, objective)` that builds the move-then-measure `callback_func`. |
 | `scservo_sdk/` | Vendored FEETECH serial-servo SDK (do not edit). |
 | `STSServer.py` / `ServerClass.py` | ZMQ server that plugs into the lab `expctl` framework and drives servos from received sequences; also a small CLI. |
 | `sequence.py` / `SequenceProcessor.py` | Vendored expctl classes so the server can unpickle `Sequence` objects. |

@@ -2,7 +2,6 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from pd import MCP3424_fiber
 import logging
 from collections import defaultdict
 
@@ -16,6 +15,7 @@ from servodriver import Servoset
 from servo_util import compose_para
 from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_POS_ALL_MASK,POS_ALL_MASK
 from step_optimize import step_optimize
+from callback_functions import make_callback_func, intensity_adc
 from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN
 
 servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
@@ -23,27 +23,8 @@ servos.de_hysterisis=True
 servos.torques_enable()
 # servos.home()
 
-def callback_func(para,
-                  pos_mask,
-                  zero=None,
-                  jac=None,
-                  jac_master_mask=None,
-                  debug=False,
-                  **kwargs):
-
-    para_nr_move = compose_para(para, pos_mask, zero, jac, jac_master_mask,debug=debug,**kwargs)
-    #
-    if not debug:
-        servos.set_angle(list(para_nr_move))
-        #
-        data_cache = []
-        for m in range(2):
-            # data = ADS1115_fiber.value
-            data = MCP3424_fiber.convert_and_read()
-            data_cache.append(data)
-        z = float(np.mean(np.array(data_cache)))
-        # print(para,z)
-        return tuple(para),z
+# Objective: photodiode intensity over the ADC (see callback_functions.OBJECTIVES).
+callback_func = make_callback_func(servos, intensity_adc)
 
 
 def cord_pm_offset(N,normd,i):
