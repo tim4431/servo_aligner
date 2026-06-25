@@ -46,10 +46,8 @@ class sts3032:
         self.portHandler = portHandler
         self.packetHandler = packetHandler
         self.SCS_ID = sts3032_dict[channel][0]
-        self.turn_num = 0
         self.SCS_MOVING_SPEED = 1500  # SCServo moving speed
         self.SCS_MOVING_ACC = 50  # SCServo moving acc
-        self.raw_angle_current = 0
         self.message = "Servo " + sts3032_dict[channel][1] + ": "
         # atexit.register(self.home)
         self.set_acc(self.SCS_MOVING_ACC)
@@ -64,8 +62,6 @@ class sts3032:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
         elif scs_error != 0:
             logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-        self.turn_num = 0
-        self.angle_current = ENCODER_CENTER
         try:
             scs_present_position_speed, scs_comm_result, scs_error = (
                 self.packetHandler.read4ByteTxRx(
@@ -171,33 +167,28 @@ class sts3032:
                 logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
             elif scs_error != 0:
                 logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
+            # Present position is read straight from the servo; hardware
+            # multi-turn (register 18 -> 124) is authoritative, no software
+            # turn counting.
             scs_present_position = SCS_LOWORD(scs_present_position_speed)
-            if abs(scs_present_position - self.raw_angle_current) > 3500:
-                self.turn_num = self.turn_num + int(
-                    np.sign(self.raw_angle_current - scs_present_position)
-                )
-            self.raw_angle_current = scs_present_position
-            self.angle_current = scs_present_position + COUNTS_PER_TURN * self.turn_num
 
             scs_present_status = scs_present_status & 0x0001
             if i % 10 == 0:
                 print(
                     i,
                     scs_present_status,
-                    self.raw_angle_current,
-                    self.angle_current,
+                    scs_present_position,
                     goal_position,
                 )
             i = i + 1
 
-            if (abs(goal_position - self.angle_current) == 0) and (
+            if (abs(goal_position - scs_present_position) == 0) and (
                 scs_present_status == 0
             ):
                 print(
                     i,
                     scs_present_status,
-                    self.raw_angle_current,
-                    self.angle_current,
+                    scs_present_position,
                     goal_position,
                 )
                 break
@@ -309,7 +300,7 @@ class Servoset:
             raise Exception("None of the device is working!")
 
     def save(self):
-        # Persist encoder positions so software turn-counting survives a restart.
+        # Persist last-known encoder positions across restarts.
         # `position` is authoritative; the rest is metadata for humans and for a
         # stale-state sanity check on load.
         positions = [int(p) for p in self.multi_position_list]
@@ -394,8 +385,6 @@ class Servoset:
                 if result == 0:
                     break
                 iteration += 1
-        # Set turn number to be zero when we set zero on all the motors.
-        self.turn_num = [0] * len(self.SCS_ID_list)
         self.multi_position_list = [ENCODER_CENTER] * len(self.SCS_ID_list)
         self.save()
 
