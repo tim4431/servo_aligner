@@ -39,6 +39,14 @@ ADDR_STS_MOVING_STATUS = 66
 # dmesg | grep tty
 protocol_end = 0  # SCServo bit end(STS/SMS=0, SCS=1)
 
+# Group-sync move-completion thresholds (see Servoset._set_position): a servo
+# counts as "arrived" once it is within MOVING_POSITION_THRESHOLD encoder counts
+# of its goal AND its present speed magnitude has dropped to <=
+# MOVING_SPEED_THRESHOLD. Mirrors sync_read_write.py, which decides completion
+# from a single position+speed sync-read rather than the moving-status register.
+MOVING_POSITION_THRESHOLD = 20  # encoder counts
+MOVING_SPEED_THRESHOLD = 50  # present-speed units (~0 = stopped); tune on hardware
+
 
 class sts3032:
 
@@ -169,8 +177,11 @@ class sts3032:
                 logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
             # Present position is read straight from the servo; hardware
             # multi-turn (register 18 -> 124) is authoritative, no software
-            # turn counting.
-            scs_present_position = SCS_LOWORD(scs_present_position_speed)
+            # turn counting. Decode the bit-15 sign-magnitude so negative
+            # multi-turn positions come back signed instead of ~32768+.
+            scs_present_position = SCS_TOHOST(
+                SCS_LOWORD(scs_present_position_speed), 15
+            )
 
             scs_present_status = scs_present_status & 0x0001
             if i % 10 == 0:
@@ -222,6 +233,12 @@ class Servoset:
         self.servo_channel_list = servo_channel_list
         self.timeout = 10
         self.de_hysterisis = DE_HYSTERESIS
+        # How _set_position decides a move is finished -- see _move_finished():
+        #   "position_speed"  : within MOVING_POSITION_THRESHOLD of goal AND
+        #                       |speed| <= MOVING_SPEED_THRESHOLD (single sync-read)
+        #   "moving_register" : servo Moving flag (register 66) == 0 for all servos
+        #                       (authoritative, but an extra sync-read per poll)
+        self.completion_mode = "position_speed"
 
         self.refresh()
 
@@ -239,14 +256,18 @@ class Servoset:
         self.SCS_ID_list = []
         for servo in self.servo_list:
             self.SCS_ID_list.append(servo.SCS_ID)
+        # present speed per servo, refreshed alongside position by get_position()
+        self.multi_speed_list = [0] * len(self.SCS_ID_list)
         #
         self.file = Path(STATE_FOLDER) / "servos_{:s}.json".format(str(self.board_id))
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.load()
         #
-        # Initialize GroupSyncRead instace for Present Position
+        # Initialize GroupSyncRead instance for Present Position + Present Speed
+        # (4 bytes: position at 56-57, speed at 58-59 -- read together in one
+        # transaction so the move loop needs a single round-trip, not two).
         self.groupSyncRead_position = GroupSyncRead(
-            self.portHandler, self.packetHandler, ADDR_STS_PRESENT_POSITION, 2
+            self.portHandler, self.packetHandler, ADDR_STS_PRESENT_POSITION, 4
         )
         self.set_group_sync_read(self.groupSyncRead_position)
         self.groupSyncRead_status = GroupSyncRead(
@@ -450,9 +471,17 @@ class Servoset:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
 
     def get_position(self):
-        scs_present_position_list = self.group_sync_read(
-            self.groupSyncRead_position, ADDR_STS_PRESENT_POSITION, 2
+        # One 4-byte sync-read yields present position (low word, 56-57) and
+        # present speed (high word, 58-59) together. Both are FEETECH bit-15
+        # sign-magnitude, decoded with SCS_TOHOST(..., 15) into signed values --
+        # the inverse of the goal-position encoding in _set_position. (Without
+        # the decode, a negative multi-turn position with bit 15 set would read
+        # as ~32768+ and corrupt the angle. cf. sync_read_write.py.)
+        raw_list = self.group_sync_read(
+            self.groupSyncRead_position, ADDR_STS_PRESENT_POSITION, 4
         )
+        scs_present_position_list = [SCS_TOHOST(SCS_LOWORD(d), 15) for d in raw_list]
+        self.multi_speed_list = [SCS_TOHOST(SCS_HIWORD(d), 15) for d in raw_list]
         self.multi_position_list = list(scs_present_position_list)
         self.save()
         return scs_present_position_list
@@ -511,6 +540,24 @@ class Servoset:
             self._set_position(goal_position_list_deh)
             self._set_position(goal_position_list)
 
+    def _move_finished(self, goal_position_list):
+        # Decide whether every servo has finished moving, per self.completion_mode.
+        if self.completion_mode == "moving_register":
+            # Servo's own Moving flag (register 66): 0 == stopped. Authoritative,
+            # but costs one extra sync-read per poll.
+            return sum(self.moving_status()) == 0
+        # "position_speed" (default): within MOVING_POSITION_THRESHOLD of goal AND
+        # slowed to <= MOVING_SPEED_THRESHOLD. Requiring both avoids a false "done"
+        # at move start (far from goal, speed still 0) and during overshoot (near
+        # goal but still moving fast). Uses the position+speed already read by
+        # get_position(), so no extra round-trip.
+        return all(
+            abs(goal_position_list[index] - self.multi_position_list[index])
+            <= MOVING_POSITION_THRESHOLD
+            and abs(self.multi_speed_list[index]) <= MOVING_SPEED_THRESHOLD
+            for index in range(len(self.SCS_ID_list))
+        )
+
     def _set_position(self, goal_position_list):
         scs_goal_position = []
         for goal_position in goal_position_list:
@@ -547,8 +594,9 @@ class Servoset:
         while (time.time() - t0) < self.timeout and (not all_stop_moving):
             status_string = "Iteration: " + str(iteration) + "\t"
 
+            # Refresh position (and speed) and persist; one sync-read. In
+            # "moving_register" mode _move_finished() does one more read.
             self.multi_position_list = self.get_position()
-            sts_moving_status = self.moving_status()
 
             for index in range(len(self.SCS_ID_list)):
                 status_string += (
@@ -563,11 +611,9 @@ class Servoset:
 
             if iteration % 100 == 0:
                 logging.debug(status_string)
-                # logging.debug(sts_moving_status)
 
-            # count how many motors have finished moving
-            if sum(sts_moving_status) == 0:
-                all_stop_moving = True
+            all_stop_moving = self._move_finished(goal_position_list)
+            if all_stop_moving:
                 logging.debug(status_string)
                 break
             iteration += 1

@@ -183,3 +183,5 @@ dmypy.json
 /state/
 
 data/
+
+src/scservo_sdk_new/
