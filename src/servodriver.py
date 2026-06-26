@@ -60,15 +60,28 @@ class sts3032:
         self.set_acc(self.SCS_MOVING_ACC)
         self.set_speed(self.SCS_MOVING_SPEED)
 
-    def set_zero(self):
-        # Set Zeros
-        scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 128
-        )
+    def set_register(self, address, value, length=1):
+        """Write `value` (1/2/4 bytes) to control-table `address` on this servo.
+
+        Centralizes the write + comm/servo-error logging shared by every
+        register-level setter. Returns (comm_result, error).
+        """
+        writer = {
+            1: self.packetHandler.write1ByteTxRx,
+            2: self.packetHandler.write2ByteTxRx,
+            4: self.packetHandler.write4ByteTxRx,
+        }[length]
+        scs_comm_result, scs_error = writer(self.SCS_ID, address, value)
         if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
+            logging.info(self.message + self.packetHandler.getTxRxResult(scs_comm_result))
         elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
+            logging.error(self.message + self.packetHandler.getRxPacketError(scs_error))
+        return scs_comm_result, scs_error
+
+    def set_zero(self):
+        # Writing 128 to the torque-enable register tells the servo to treat its
+        # current shaft position as the new zero (FEETECH "set middle" command).
+        self.set_register(ADDR_STS_TORQUE_ENABLE, 128)
         try:
             scs_present_position_speed, scs_comm_result, scs_error = (
                 self.packetHandler.read4ByteTxRx(
@@ -94,51 +107,20 @@ class sts3032:
             return 1
 
     def set_acc(self, set_acc):
-        # Write SCServo acc
         self.SCS_MOVING_ACC = set_acc
-        scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.SCS_ID, ADDR_STS_GOAL_ACC, self.SCS_MOVING_ACC
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-
+        self.set_register(ADDR_STS_GOAL_ACC, set_acc, length=1)
         logging.info(self.message + "SCServo acc set!")
 
     def set_speed(self, set_speed):
-        # Write SCServo speed
         self.SCS_MOVING_SPEED = set_speed
-        scs_comm_result, scs_error = self.packetHandler.write2ByteTxRx(
-            self.SCS_ID, ADDR_STS_GOAL_SPEED, self.SCS_MOVING_SPEED
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info(
-                self.message + "%s" % self.packetHandler.getTxRxResult(scs_comm_result)
-            )
-        elif scs_error != 0:
-            logging.error(
-                self.message + "%s" % self.packetHandler.getRxPacketError(scs_error)
-            )
+        self.set_register(ADDR_STS_GOAL_SPEED, set_speed, length=2)
         logging.info(self.message + "SCServo speed set!")
 
     def torque_disable(self):
-        scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 0
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
+        self.set_register(ADDR_STS_TORQUE_ENABLE, 0)
 
     def torque_enable(self):
-        scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 1
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
+        self.set_register(ADDR_STS_TORQUE_ENABLE, 1)
 
 
 # A bigger Class that contains all the motors, should try to initialize the port connection as well in init of this class
