@@ -22,6 +22,10 @@ Helper naming convention:
 ``ndmodr``   overwrite the masked entries of a full **encoder-count** vector
 ===========  ===============================================================
 
+``get_mask`` is a separate mask-composition helper: it builds a full channel
+mask from a master mask (e.g. a beam path) and any number of reduced sub-masks
+applied in turn (e.g. a knob-group sub-mask).
+
 This module is pure (no hardware imports) and safe to import.
 """
 
@@ -144,6 +148,36 @@ def ndmodr(nd, r_mod, r_mask) -> np.ndarray:
     return out.astype(np.int_)
 
 
+def get_mask(master_mask, *sub_masks) -> list:
+    """Compose a full channel mask by folding sub-masks into a master mask.
+
+    ``master_mask`` is a full-length 0/1 mask marking a group of channels — for
+    instance a beam path, ``[1,1,1,1,0,0,0,0]``. Each following ``sub_mask`` is a
+    0/1 mask over *only* the channels still selected (length = number of 1s in
+    the running mask) and is written, in order, onto those slots; every other
+    position becomes 0. Sub-masks are applied left to right, each narrowing the
+    previous result, so masks compose to any depth::
+
+        get_mask([1,1,1,1,0,0,0,0], [1,0,1,0])         -> [1,0,1,0,0,0,0,0]  # path A, X_XDOT
+        get_mask([0,0,0,0,1,1,1,1], [1,0,1,0])         -> [0,0,0,0,1,0,1,0]  # path B, X_XDOT
+        get_mask([1]*8, [1,1,1,1,0,0,0,0], [1,0,1,0])  -> [1,0,1,0,0,0,0,0]  # all -> A -> X_XDOT
+
+    With no sub-masks it just returns ``master_mask`` as a 0/1 list. A sub-mask is
+    interpreted positionally within the running selection, so a group whose knobs
+    sit in a different order under a different master needs a reordered sub-mask.
+
+    Returns a full-length 0/1 list, one entry per channel.
+    """
+    out = np.asarray(master_mask, dtype=int)
+    for i, sub in enumerate(sub_masks):
+        mask = out.astype(bool)
+        _check_reduced_len(mask, sub, f"get_mask[sub {i}]")
+        nxt = np.zeros(len(mask), dtype=int)
+        nxt[mask] = np.asarray(sub, dtype=int)
+        out = nxt
+    return out.tolist()
+
+
 def format_para(para) -> str:
     """Format a parameter vector as ``"x_0=.. x_1=.."`` for log messages."""
     return " ".join("x_{:d}={:.2f}".format(i, para[i]) for i in range(len(para)))
@@ -211,3 +245,5 @@ def compose_para(para,
 if __name__ == "__main__":
     # reduced [-5, 4] over mask [1,0,1,0] -> full encoder-count vector
     print(r2nd([-5, 4], [1, 0, 1, 0]))
+    # fold all-channels -> path B -> X_XDOT knob group -> B_X_XDOT
+    print(get_mask([1, 1, 1, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1], [1, 0, 1, 0]))

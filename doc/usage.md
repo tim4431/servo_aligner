@@ -38,6 +38,7 @@ cp config/calibration.template.yaml config/calibration.yaml
 | `servo.speed`, `servo.acc` | Default move speed / acceleration applied to every servo. |
 | `servo.de_hysteresis` | Backlash compensation tuned to the physical mount: `enabled`, `overshoot` (steps), `threshold`. |
 | `servo.channels` | The channel map — a list of `{id, name}`. **List order defines the channel index** and thus the 8-element vectors used everywhere (masks, angles). |
+| `servo.masks` | Channel grouping masks (`A_X_XDOT`, …): which channel indices form each knob group. Lives with the channel map because it depends on the servo→knob wiring. |
 | `adc` | MCP3424 I2C wiring: `i2c_bus`, `address`, `channel`, `gain`, `resolution`. |
 | `paths.state_folder` | Folder where the runtime `servos_<board>.json` (saved positions) lives — kept out of `src/`, created automatically. Relative paths resolve against the repo root; use an absolute path in production. |
 | `paths.data_folder` | Base folder for scan/calibration output (scripts create subfolders under it). Same relative/absolute rule. |
@@ -52,7 +53,6 @@ cp config/calibration.template.yaml config/calibration.yaml
 
 | Section | Meaning |
 |---------|---------|
-| `masks` | The channel grouping masks (`A_X_XDOT`, …): which channel indices form each knob group. Depends on which servo drives which knob. |
 | `accept_functions` | Beam-clip raster region per mask: `slope`, `b`, `tol`. |
 | `coupling_vectors` | Per-path (`A`/`B`) Jacobian coupling directions used to seed offsets. |
 | `spiral`, `bfgs` | Optimizer tuning (spiral-descent + L-BFGS-B). |

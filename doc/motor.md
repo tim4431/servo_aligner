@@ -53,7 +53,7 @@ The factory default for this register is **108** (`0b0110_1100`). Setting BIT4 t
 
 With **124** the servo reports roughly **−180° … +2700°** (≈ ±7.5 turns).
 
-**How to change it:** connect the servo with FEETECH's **FD** debugging tool (`FD1.9.8.2`, in the Notion export under `tmp/`), open the Register-18 view, change the displayed value from 108 to 124, and write it to the servo.
+**How to change it:** the easiest way is the setup wizard — [`src/init_helper.py`](../src/init_helper.py) scans the bus and writes `Register 18 → 124` (handling the EEPROM unlock/lock) for each servo, and can also assign servo IDs. Alternatively, do it by hand with FEETECH's **FD** debugging tool (`FD1.9.8.2`, in the Notion export under `tmp/`): open the Register-18 view, change the displayed value from 108 to 124, and write it to the servo.
 
 ## Min / Max position registers
 

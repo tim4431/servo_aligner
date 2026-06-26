@@ -8,23 +8,8 @@
 # beam geometry, so it is re-tuned per setup. Pure hardware/software settings
 # live in machine.yaml instead.
 
-# --- Channel grouping masks --------------------------------------------------
-# Which channel indices form each knob group. A = upper beam path, B = lower.
-# Each entry is a 0/1 list over the channels defined in machine.yaml
-# (servo.channels order). The naming is <PATH>_<KNOBS>:
-#   x, y   = position knobs; xdot, ydot = angle knobs.
-masks:
-  A_X_XDOT:    [1, 0, 1, 0, 0, 0, 0, 0]
-  A_Y_YDOT:    [0, 1, 0, 1, 0, 0, 0, 0]
-  A_X_Y:       [1, 1, 0, 0, 0, 0, 0, 0]
-  A_XDOT_YDOT: [0, 0, 1, 1, 0, 0, 0, 0]
-  A_POS_ALL:   [1, 1, 1, 1, 0, 0, 0, 0]
-  B_X_XDOT:    [0, 0, 0, 0, 1, 0, 1, 0]
-  B_Y_YDOT:    [0, 0, 0, 0, 0, 1, 0, 1]
-  B_X_Y:       [0, 0, 0, 0, 0, 0, 1, 1]
-  B_XDOT_YDOT: [0, 0, 0, 0, 1, 1, 0, 0]
-  B_POS_ALL:   [0, 0, 0, 0, 1, 1, 1, 1]
-  POS_ALL:     [1, 1, 1, 1, 1, 1, 1, 1]
+# NOTE: the channel grouping `masks` moved to machine.yaml (they depend on the
+# servo->knob wiring, not the optics), under servo.masks next to the channel map.
 
 # --- Beam-clip accept functions ----------------------------------------------
 # Restrict the clip_scan raster to the line  y ~= slope*x + b  (+/- tol),
@@ -32,8 +17,11 @@ masks:
 accept_functions:
   A_X_XDOT: {slope: 1.35,  b: 0, tol: 80}
   A_Y_YDOT: {slope: -1.36, b: 5, tol: 80}
-  B_X_XDOT: {slope: -0.67, b: 0, tol: 80}
-  B_Y_YDOT: {slope: -0.67, b: 5, tol: 80}
+  # B re-derived for the symmetric channel order (the X_XDOT / Y_YDOT scan axes
+  # swapped: slope -> 1/slope, b -> -b/slope, tol -> tol/|slope|). Re-verify on
+  # the next clip_scan run.
+  B_X_XDOT: {slope: -1.49, b: 0,    tol: 119}
+  B_Y_YDOT: {slope: -1.49, b: 7.46, tol: 119}
 
 # --- Jacobian coupling vectors -----------------------------------------------
 # Per master path, the (master-knob -> slave-knob) coupling directions used to
@@ -42,9 +30,9 @@ coupling_vectors:
   A:
     - [1, 0, 1.35, 0]
     - [0, 1, 0, -1.36]
-  B:
-    - [1, 0, -0.67, 0]
-    - [0, 1, 0, -0.67]
+  B:    # reordered to the symmetric [x, y, xdot, ydot] layout; re-verify
+    - [1, 0, -1.49, 0]
+    - [0, 1, 0, -1.49]
 
 # --- Spiral-descent optimizer tuning (spiral.SpiralPathConfig) ----------------
 spiral:

@@ -1,0 +1,27 @@
+# Python dependencies for servo_aligner (FEETECH STS3032 mirror-mount control).
+#
+# Version floors are the ones validated on the Pi under the `expctl3` conda env
+# (Python 3.8). Install everything with:
+#     pip install -r requirements.txt
+# or run the setup wizard, which installs any that are missing:
+#     python src/init_helper.py
+
+# --- numerics / optimization / plotting --------------------------------------
+numpy>=1.24.3
+scipy>=1.10.1
+matplotlib>=3.7.2
+
+# --- config files ------------------------------------------------------------
+PyYAML>=6.0          # config.py loads machine.yaml / calibration.yaml
+ruyaml>=0.91         # init_helper.py: comment-preserving YAML round-trip on write
+                     #   (upstream ruamel.yaml also works if already installed)
+
+# --- hardware I/O ------------------------------------------------------------
+pyserial>=3.4        # serial bus to the daisy-chained servos (scservo_sdk)
+smbus2>=0.5.0        # I2C access for the photodiode ADC
+MCP342x>=0.3.5       # MCP3424 ADC driver (the optimization feedback signal)
+
+# --- server / misc -----------------------------------------------------------
+pyzmq>=25.1.2        # ZMQ server that plugs into the expctl framework
+tqdm>=4.66.5         # progress bars in the scan / calibration routines
+coloredlogs>=15.0.1  # colored logging output
