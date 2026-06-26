@@ -50,8 +50,7 @@ MOVING_SPEED_THRESHOLD = 50  # present-speed units (~0 = stopped); tune on hardw
 
 class sts3032:
 
-    def __init__(self, channel, portHandler, packetHandler):
-        self.portHandler = portHandler
+    def __init__(self, channel, packetHandler):
         self.packetHandler = packetHandler
         self.SCS_ID = sts3032_dict[channel][0]
         self.SCS_MOVING_SPEED = 1500  # SCServo moving speed
@@ -123,90 +122,6 @@ class sts3032:
             )
         logging.info(self.message + "SCServo speed set!")
 
-    def set_position(self, goal_position):
-
-        if goal_position >= 0:
-            val = 0b0000000000000000 | abs(goal_position)
-            scs_goal_position = val
-        elif goal_position < 0:
-            val = 0b1000000000000000 | abs(goal_position)
-            scs_goal_position = val
-
-        # pre-read
-        scs_present_position_speed, scs_comm_result, scs_error = (
-            self.packetHandler.read4ByteTxRx(
-                self.SCS_ID, ADDR_STS_PRESENT_POSITION
-            )
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-        self.raw_angle_current = self.packetHandler.scs_loword(scs_present_position_speed)
-
-        # Write SCServo goal position
-        scs_comm_result, scs_error = self.packetHandler.write2ByteTxRx(
-            self.SCS_ID, ADDR_STS_GOAL_POSITION, scs_goal_position
-        )
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        elif scs_error != 0:
-            logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-
-        i = 0
-        while i < 5000:
-            # Read SCServo present position
-            scs_present_position_speed, scs_comm_result, scs_error = (
-                self.packetHandler.read4ByteTxRx(
-                    self.SCS_ID, ADDR_STS_PRESENT_POSITION
-                )
-            )
-            if scs_comm_result != COMM_SUCCESS:
-                logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-            elif scs_error != 0:
-                logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-            # Read SCServo present status
-            scs_present_status, scs_comm_result, scs_error = (
-                self.packetHandler.read4ByteTxRx(
-                    self.SCS_ID, ADDR_STS_MOVING_STATUS
-                )
-            )
-            if scs_comm_result != COMM_SUCCESS:
-                logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-            elif scs_error != 0:
-                logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-            # Present position is read straight from the servo; hardware
-            # multi-turn (register 18 -> 124) is authoritative, no software
-            # turn counting. Decode the bit-15 sign-magnitude so negative
-            # multi-turn positions come back signed instead of ~32768+.
-            scs_present_position = self.packetHandler.scs_tohost(
-                self.packetHandler.scs_loword(scs_present_position_speed), 15
-            )
-
-            scs_present_status = scs_present_status & 0x0001
-            if i % 10 == 0:
-                print(
-                    i,
-                    scs_present_status,
-                    scs_present_position,
-                    goal_position,
-                )
-            i = i + 1
-
-            if (abs(goal_position - scs_present_position) == 0) and (
-                scs_present_status == 0
-            ):
-                print(
-                    i,
-                    scs_present_status,
-                    scs_present_position,
-                    goal_position,
-                )
-                break
-
-    def home(self):
-        self.set_position(ENCODER_CENTER)
-
     def torque_disable(self):
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
             self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 0
@@ -247,7 +162,7 @@ class Servoset:
         self.servo_list = []
 
         for channel in self.servo_channel_list:
-            servo = sts3032(channel, self.portHandler, self.packetHandler)
+            servo = sts3032(channel, self.packetHandler)
             servo.set_acc(SERVO_ACC)
             servo.set_speed(SERVO_SPEED)
             servo.torque_enable()
