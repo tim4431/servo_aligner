@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 from smbus2 import SMBus, i2c_msg
-from scservo_sdk import *  # Uses SCServo SDK library
+from scservo_sdk import *  # Uses FEETECH SCServo SDK library (sms_sts model)
 import MCP342x
 import logging
 from copy import deepcopy
@@ -64,7 +64,7 @@ class sts3032:
     def set_zero(self):
         # Set Zeros
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 128
+            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 128
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
@@ -73,7 +73,7 @@ class sts3032:
         try:
             scs_present_position_speed, scs_comm_result, scs_error = (
                 self.packetHandler.read4ByteTxRx(
-                    self.portHandler, self.SCS_ID, ADDR_STS_PRESENT_POSITION
+                    self.SCS_ID, ADDR_STS_PRESENT_POSITION
                 )
             )
             if scs_comm_result != COMM_SUCCESS:
@@ -98,7 +98,7 @@ class sts3032:
         # Write SCServo acc
         self.SCS_MOVING_ACC = set_acc
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_GOAL_ACC, self.SCS_MOVING_ACC
+            self.SCS_ID, ADDR_STS_GOAL_ACC, self.SCS_MOVING_ACC
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
@@ -111,7 +111,7 @@ class sts3032:
         # Write SCServo speed
         self.SCS_MOVING_SPEED = set_speed
         scs_comm_result, scs_error = self.packetHandler.write2ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_GOAL_SPEED, self.SCS_MOVING_SPEED
+            self.SCS_ID, ADDR_STS_GOAL_SPEED, self.SCS_MOVING_SPEED
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info(
@@ -135,18 +135,18 @@ class sts3032:
         # pre-read
         scs_present_position_speed, scs_comm_result, scs_error = (
             self.packetHandler.read4ByteTxRx(
-                self.portHandler, self.SCS_ID, ADDR_STS_PRESENT_POSITION
+                self.SCS_ID, ADDR_STS_PRESENT_POSITION
             )
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
         elif scs_error != 0:
             logging.error("%s" % self.packetHandler.getRxPacketError(scs_error))
-        self.raw_angle_current = SCS_LOWORD(scs_present_position_speed)
+        self.raw_angle_current = self.packetHandler.scs_loword(scs_present_position_speed)
 
         # Write SCServo goal position
         scs_comm_result, scs_error = self.packetHandler.write2ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_GOAL_POSITION, scs_goal_position
+            self.SCS_ID, ADDR_STS_GOAL_POSITION, scs_goal_position
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
@@ -158,7 +158,7 @@ class sts3032:
             # Read SCServo present position
             scs_present_position_speed, scs_comm_result, scs_error = (
                 self.packetHandler.read4ByteTxRx(
-                    self.portHandler, self.SCS_ID, ADDR_STS_PRESENT_POSITION
+                    self.SCS_ID, ADDR_STS_PRESENT_POSITION
                 )
             )
             if scs_comm_result != COMM_SUCCESS:
@@ -168,7 +168,7 @@ class sts3032:
             # Read SCServo present status
             scs_present_status, scs_comm_result, scs_error = (
                 self.packetHandler.read4ByteTxRx(
-                    self.portHandler, self.SCS_ID, ADDR_STS_MOVING_STATUS
+                    self.SCS_ID, ADDR_STS_MOVING_STATUS
                 )
             )
             if scs_comm_result != COMM_SUCCESS:
@@ -179,8 +179,8 @@ class sts3032:
             # multi-turn (register 18 -> 124) is authoritative, no software
             # turn counting. Decode the bit-15 sign-magnitude so negative
             # multi-turn positions come back signed instead of ~32768+.
-            scs_present_position = SCS_TOHOST(
-                SCS_LOWORD(scs_present_position_speed), 15
+            scs_present_position = self.packetHandler.scs_tohost(
+                self.packetHandler.scs_loword(scs_present_position_speed), 15
             )
 
             scs_present_status = scs_present_status & 0x0001
@@ -209,7 +209,7 @@ class sts3032:
 
     def torque_disable(self):
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 0
+            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 0
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
@@ -218,7 +218,7 @@ class sts3032:
 
     def torque_enable(self):
         scs_comm_result, scs_error = self.packetHandler.write1ByteTxRx(
-            self.portHandler, self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 1
+            self.SCS_ID, ADDR_STS_TORQUE_ENABLE, 1
         )
         if scs_comm_result != COMM_SUCCESS:
             logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
@@ -267,15 +267,15 @@ class Servoset:
         # (4 bytes: position at 56-57, speed at 58-59 -- read together in one
         # transaction so the move loop needs a single round-trip, not two).
         self.groupSyncRead_position = GroupSyncRead(
-            self.portHandler, self.packetHandler, ADDR_STS_PRESENT_POSITION, 4
+            self.packetHandler, ADDR_STS_PRESENT_POSITION, 4
         )
         self.set_group_sync_read(self.groupSyncRead_position)
         self.groupSyncRead_status = GroupSyncRead(
-            self.portHandler, self.packetHandler, ADDR_STS_MOVING_STATUS, 1
+            self.packetHandler, ADDR_STS_MOVING_STATUS, 1
         )
         self.set_group_sync_read(self.groupSyncRead_status)
         self.groupSyncWrite_position = GroupSyncWrite(
-            self.portHandler, self.packetHandler, ADDR_STS_GOAL_POSITION, 2
+            self.packetHandler, ADDR_STS_GOAL_POSITION, 2
         )
 
         # make sure the current position gets saved to disk when the programm exits
@@ -289,9 +289,10 @@ class Servoset:
             try:
                 self.portHandler = PortHandler(DEVICENAME)
                 self.portHandler.setPacketTimeoutMillis(100)
-                # Initialize self.packetHandler instance
-                # Get methods and members of Protocol
-                self.packetHandler = PacketHandler(protocol_end)
+                # sms_sts is the STS/SMS model handler; it subclasses
+                # protocol_packet_handler and owns the port, so it doubles as
+                # our packetHandler (protocol_end is fixed to 0 = STS/SMS).
+                self.packetHandler = sms_sts(self.portHandler)
 
                 # Open port
                 try:
@@ -442,7 +443,8 @@ class Servoset:
         datas = []
 
         for SCS_ID in self.SCS_ID_list:
-            scs_getdata_result = groupSyncRead.isAvailable(
+            # New SDK: isAvailable returns (available, error) instead of a bool.
+            scs_getdata_result, _ = groupSyncRead.isAvailable(
                 SCS_ID, start_address, data_length
             )
             if scs_getdata_result == True:
@@ -458,7 +460,10 @@ class Servoset:
         # Add SCServo goal position values to the Syncwrite parameter storage
         index = 0
         for SCS_ID in self.SCS_ID_list:
-            param_goal_position = [SCS_LOBYTE(datas[index]), SCS_HIBYTE(datas[index])]
+            param_goal_position = [
+                self.packetHandler.scs_lobyte(datas[index]),
+                self.packetHandler.scs_hibyte(datas[index]),
+            ]
             scs_addparam_result = groupSyncWrite.addParam(SCS_ID, param_goal_position)
             index += 1
             if scs_addparam_result != True:
@@ -480,8 +485,11 @@ class Servoset:
         raw_list = self.group_sync_read(
             self.groupSyncRead_position, ADDR_STS_PRESENT_POSITION, 4
         )
-        scs_present_position_list = [SCS_TOHOST(SCS_LOWORD(d), 15) for d in raw_list]
-        self.multi_speed_list = [SCS_TOHOST(SCS_HIWORD(d), 15) for d in raw_list]
+        ph = self.packetHandler
+        scs_present_position_list = [
+            ph.scs_tohost(ph.scs_loword(d), 15) for d in raw_list
+        ]
+        self.multi_speed_list = [ph.scs_tohost(ph.scs_hiword(d), 15) for d in raw_list]
         self.multi_position_list = list(scs_present_position_list)
         self.save()
         return scs_present_position_list
