@@ -13,10 +13,10 @@ logging.basicConfig(
 
 from servodriver import Servoset
 from servo_util import compose_para
-from servo_const import A_X_XDOT_MASK,A_Y_YDOT_MASK,A_X_Y_MASK,A_POS_ALL_MASK,B_X_XDOT_MASK,B_Y_YDOT_MASK,B_X_Y_MASK,B_POS_ALL_MASK,POS_ALL_MASK
 from step_optimize import step_optimize
 from callback_functions import make_callback_func, intensity_adc
-from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN
+from config import (SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN,
+                    MASKS, knob_mask)
 
 servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis=True
@@ -69,7 +69,7 @@ def load_assumed_jac(path):
 JAC_ASSUME_PATH = JACOBIAN.get("assume_path")
 jac_assume, jac_x0 = load_assumed_jac(JAC_ASSUME_PATH)
 
-cf00 = lambda para: callback_func(para, pos_mask=POS_ALL_MASK,zero=np.array([0,0,0,0,0,0,0,0],dtype=float))
+cf00 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"],zero=np.array([0,0,0,0,0,0,0,0],dtype=float))
 print(cf00([0,0,0,0,0,0,0,0]))
 
 #
@@ -77,7 +77,8 @@ print(cf00([0,0,0,0,0,0,0,0]))
 N=1
 normd = JACOBIAN.get("normd", 20)
 offset_type = 'zero' # 'pm' or 'rand' or 'lin' or 'zero'
-MASTER = "B"  # A=upper path, B=lower path
+MASTER = "B"  # A=upper path, B=lower path; per-stage knobs optimize the slave path
+SLAVE = "A" if MASTER == "B" else "B"
 # Output folder for Jacobian data, under paths.data_folder (machine.yaml).
 JAC_FOLDER = os.path.join(DATA_FOLDER, JACOBIAN.get("output_subdir", "jacobian"))
 #
@@ -94,10 +95,10 @@ for i in range(N):
 
     zero = np.array([0,0,0,0,0,0,0,0],dtype=float)
     # zero = np.array([3.0, 58.0, 11.0, -85.0, 0.0, 0.0, 0.0, 0.0],dtype=float)
-    cf0 = lambda para: callback_func(para, pos_mask=POS_ALL_MASK,zero=zero)
+    cf0 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"],zero=zero)
     # print(cf0([0,0,0,0,0,0,0,0]))
     #
-    offset_mask = A_POS_ALL_MASK if MASTER == "A" else B_POS_ALL_MASK
+    offset_mask = knob_mask(MASTER, "POS_ALL")
 
     if offset_type == 'pm':
         offset = cord_pm_offset(N,normd,i)
@@ -119,13 +120,13 @@ for i in range(N):
     try:
         logging.info(f"Start optimization with zero = {zero}")
         # servos.de_hysterisis=False
-        zero = step_optimize(servos,callback_func,pos_mask = B_X_Y_MASK if MASTER == "A" else A_X_Y_MASK,zero=zero,bounds_single = (-100,100))
-        zero = step_optimize(servos,callback_func,pos_mask = B_X_XDOT_MASK if MASTER == "A" else A_X_XDOT_MASK,zero=zero)
-        zero = step_optimize(servos,callback_func,pos_mask = B_Y_YDOT_MASK if MASTER == "A" else A_Y_YDOT_MASK,zero=zero)
+        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "X_Y"),zero=zero,bounds_single = (-100,100))
+        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "X_XDOT"),zero=zero)
+        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "Y_YDOT"),zero=zero)
         # servos.de_hysterisis=True
-        zero = step_optimize(servos,callback_func,pos_mask = B_POS_ALL_MASK if MASTER == "A" else A_POS_ALL_MASK,zero=zero,method='L-BFGS-B')
+        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "POS_ALL"),zero=zero,method='L-BFGS-B')
         #
-        _,I = callback_func(zero,pos_mask=POS_ALL_MASK)
+        _,I = callback_func(zero,pos_mask=MASKS["POS_ALL"])
         print(I)
         #
         if offset_type in ['pm','rand','lin']:

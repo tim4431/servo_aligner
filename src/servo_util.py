@@ -1,7 +1,8 @@
 """Vector helpers mapping between *reduced* and *full* knob vectors.
 
 One optimizer step acts on only a subset of the servo channels, picked by a 0/1
-``mask`` (see ``servo_const``). These helpers convert between three vector
+``mask`` (the channel grouping masks in ``config``). These helpers convert
+between three vector
 representations (names match the developer notes / CLAUDE.md):
 
 * ``r``  — *reduced* vector: just the masked entries, length ``sum(mask)``.

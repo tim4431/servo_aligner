@@ -10,7 +10,7 @@ The physics background, alignment procedure, de-hysteresis rationale, Jacobian/o
 
 ## Hardware dependency
 
-Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `callback_functions.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `callback_functions.py` opens the I2C ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `config.py`, `servo_util.py`, `servo_const.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py` (the first two need PyYAML and the `machine.yaml`/`calibration.yaml` files present, since `config.py` reads them at import and `servo_const.py` pulls its masks from `config`).
+Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `callback_functions.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `callback_functions.py` opens the I2C ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `config.py`, `servo_util.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py` (the first two need PyYAML and the `machine.yaml`/`calibration.yaml` files present, since `config.py` reads them at import).
 
 ## Two ways the code runs
 
@@ -53,7 +53,7 @@ There is no build, lint, or test suite. The `example/notebooks/*.ipynb` are expl
 ## Core concepts (needed to read the optimization code)
 
 - **Channel layout**: 8 servos = two beam paths × two mirrors × two knobs. Naming convention `A` = upper path, `B` = lower path; per path the four knobs are `x, y, xdot, ydot` (a position knob and an angle knob on each of two mirrors). Geometrically the knob pairs are coupled, which is the whole reason for numeric optimization.
-- **`pos_mask`** (`servo_const.py`): an 8-element 0/1 list selecting which channels a given step acts on (e.g. `A_X_XDOT_MASK = [1,0,1,0,0,0,0,0]`). `posmask2str` / `posmask2acceptfunc` look up behavior by identity-comparing against the known masks, so pass the actual constant objects, not copies.
+- **`pos_mask`** (`config.py`): an 8-element 0/1 list selecting which channels a given step acts on (e.g. `A_X_XDOT_MASK = [1,0,1,0,0,0,0,0]`). The masks and the `posmask2str` reverse lookup live in `config.py` (loaded from `calibration.yaml`); `posmask2acceptfunc` (in `clip_scan.py`) looks up the accept function by mask name.
 - **Vector notations in `servo_util.py`** — three representations the helpers convert between:
   - `r` = *reduced* vector, only the masked entries (length = `sum(mask)`)
   - `nr` = full-length **angle** vector in degrees

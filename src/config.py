@@ -111,8 +111,26 @@ DATA_FOLDER = str(_resolve_path(MACHINE["paths"]["data_folder"]))
 SERVER = dict(MACHINE["server"])
 
 # --- calibration.yaml: channel grouping masks --------------------------------
-# {mask_name: [0/1, ...]} over the channels defined in machine.yaml.
+# {mask_name: [0/1, ...]} over the channels defined in machine.yaml. Each mask
+# selects which channel indices form a knob group (e.g.
+# A_X_XDOT = [1,0,1,0,0,0,0,0]); the values depend on the optics setup (which
+# servo drives which knob), hence they live in calibration.yaml. Per-path masks
+# follow the convention "<path>_<group>" (path "A"=upper, "B"=lower), e.g.
+# "A_X_XDOT" or "B_POS_ALL"; "POS_ALL" spans both paths.
 MASKS = {name: list(m) for name, m in CALIB["masks"].items()}
+
+
+def knob_mask(path, group):
+    """Channel mask for a knob group on a beam path, e.g. knob_mask("A", "X_XDOT").
+
+    Looks up MASKS["<path>_<group>"]; ``path`` is "A" (upper) or "B" (lower).
+    """
+    return MASKS[f"{path}_{group}"]
+
+
+def posmask2str(posmask):
+    """Reverse lookup: the mask's name (e.g. "A_X_XDOT"), or None if unknown."""
+    return next((name for name, mask in MASKS.items() if posmask == mask), None)
 
 # --- calibration.yaml: beam-clip accept functions ----------------------------
 # {mask_name: {slope, b, tol}}

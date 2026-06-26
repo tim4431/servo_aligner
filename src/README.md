@@ -28,7 +28,7 @@ cp ../config/calibration.template.yaml ../config/calibration.yaml   # masks, acc
 | `clip_scan.py` | 2D raster scan of knob pairs; fit beam-clip ellipse to find the center. |
 | `calibrate_jacobian.py` | Spiral + L-BFGS-B coupling optimization; derive the knob Jacobian. |
 | `step_optimize.py` / `spiral.py` | Optimization engine: `step_optimize` (one stage) and `pts_iterator` (optimizer dispatch) live in `step_optimize.py`; `spiral.py` is the custom spiral-descent search. |
-| `servo_util.py` / `servo_const.py` | Channel masks and the `r`/`nr`/`nd` vector helpers (`compose_para`, etc.). |
+| `servo_util.py` | The `r`/`nr`/`nd` vector helpers (`compose_para`, etc.); channel masks live in `config.py`. |
 | `fit_gaussian.py` / `motor_scan.py` / `numeric_sim.py` / `plot_csv.py` | Fitting, scanning, simulation, and plotting helpers. |
 
 ## Running

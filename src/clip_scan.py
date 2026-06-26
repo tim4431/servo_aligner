@@ -22,17 +22,17 @@ from fit_gaussian import (
     popt_get_mu_cov,
 )
 from motor_scan import motor_2d_scan
-from servo_const import (
-    A_X_XDOT_MASK,
-    A_Y_YDOT_MASK,
-    A_X_Y_MASK,
-    B_X_XDOT_MASK,
-    B_Y_YDOT_MASK,
-    POS_ALL_MASK,
+from callback_functions import make_callback_func, intensity_adc
+from config import (
+    SERVER,
+    SERVO_CHANNEL_LIST,
+    DATA_FOLDER,
+    ACCEPT_FUNCTIONS,
+    CLIP_SCAN,
+    MASKS,
+    knob_mask,
     posmask2str,
 )
-from callback_functions import make_callback_func, intensity_adc
-from config import SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, ACCEPT_FUNCTIONS, CLIP_SCAN
 
 servos = Servoset(board_id=SERVER["board_id"], servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis = False
@@ -199,16 +199,16 @@ if __name__ == "__main__":
     # d = np.load("{}{}_popt.npz".format(FOLDER,fileName))
     # zero = d['zero']
     # print(zero)
-    cf0 = lambda para: callback_func(para, pos_mask=POS_ALL_MASK, zero=zero)
+    cf0 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"], zero=zero)
     print(cf0([0, 0, 0, 0, 0, 0, 0, 0]))
     #
     for ITER_NUM in range(6, 7):
-        for POS_MASK in [A_X_XDOT_MASK, A_Y_YDOT_MASK]:
-            # for POS_MASK in [A_Y_YDOT_MASK]:
+        for POS_MASK in [knob_mask("A", "X_XDOT"), knob_mask("A", "Y_YDOT")]:
+            # for POS_MASK in [knob_mask("A", "Y_YDOT")]:
             N_pts = CLIP_SCAN.get("N_pts_fine", 50)
             SCAN_RANGE = (
                 CLIP_SCAN.get("scan_range_xxdot", 500)
-                if POS_MASK == A_X_XDOT_MASK
+                if POS_MASK == knob_mask("A", "X_XDOT")
                 else CLIP_SCAN.get("scan_range_yydot", 800)
             )
             zero = scan_and_analyze(
@@ -216,7 +216,7 @@ if __name__ == "__main__":
             )
         #
         N_pts = CLIP_SCAN.get("N_pts_coarse", 15)
-        POS_MASK = A_X_Y_MASK
+        POS_MASK = knob_mask("A", "X_Y")
         SCAN_RANGE = CLIP_SCAN.get("scan_range_xy", 30)
         zero = scan_and_analyze(
             zero,

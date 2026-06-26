@@ -141,7 +141,7 @@ created automatically — point `data_folder` at a writable location.
 ## 5. Safe-to-import vs hardware modules
 
 If you are reading/editing code off the Pi, only these import without hardware:
-[`servo_util.py`](../src/servo_util.py), [`servo_const.py`](../src/servo_const.py), [`spiral.py`](../src/spiral.py), [`fit_gaussian.py`](../src/fit_gaussian.py),
+[`config.py`](../src/config.py), [`servo_util.py`](../src/servo_util.py), [`spiral.py`](../src/spiral.py), [`fit_gaussian.py`](../src/fit_gaussian.py),
 [`numeric_sim.py`](../src/numeric_sim.py). Everything else opens a serial port or the I2C ADC at import.
 [`spiral.py`](../src/spiral.py) and [`numeric_sim.py`](../src/numeric_sim.py) have `__main__` matplotlib demos that are the
 only things you can actually *run* on a dev machine.
