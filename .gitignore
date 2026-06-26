@@ -185,3 +185,5 @@ dmypy.json
 data/
 
 src/scservo_sdk_new/
+
+.vscode/
