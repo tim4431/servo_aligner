@@ -1,20 +1,22 @@
 #!/usr/bin/env python
-"""First-run setup wizard for the servo aligner.
+"""First-run setup helper for the servo aligner.
 
-For someone setting up a new machine from scratch, this does four things:
+Run it and pick an action from the menu (or "Full guided setup" to do them all,
+in order). The individual options are:
 
-1. Installs the project's Python dependencies (the packages in
-   ``requirements.txt``), offering to ``pip install`` any that are missing.
-2. Creates the two gitignored config files from the checked-in templates --
-   ``config/machine.yaml`` and ``config/calibration.yaml`` -- and walks you
-   through editing the values interactively (the template comments are preserved
-   by round-tripping through ``ruyaml``, which is required for this step).
-3. Connects to the serial bus and scans for servos so you can build the
-   ``servo.channels`` map from what is actually wired up.
-4. Performs the servo register steps that doc/motor.md otherwise asks you to do
-   by hand in FEETECH's FD tool:
-     * assign a unique bus **ID** to a servo (factory default is 1), and
-     * enable hardware multi-turn feedback by setting **Register 18 -> 124**.
+* **Python dependencies** -- check ``requirements.txt`` and offer to
+  ``pip install`` any that are missing.
+* **machine.yaml** -- create it from the template and edit it interactively:
+  hardware, the ``servo.channels`` map (built from a live bus scan) and the
+  channel grouping ``masks``. Comments are preserved by round-tripping through
+  ``ruyaml``, which is required for this step.
+* **calibration.yaml** -- same, for the optics / optimizer-tuning values.
+* **Servo bus** -- the register steps doc/motor.md otherwise asks you to do by
+  hand in FEETECH's FD tool: assign a unique bus **ID** to a servo (factory
+  default is 1) and enable hardware multi-turn feedback (**Register 18 -> 124**).
+* **Scan the bus** -- just list the servo IDs currently responding.
+* **Identify a servo** -- briefly jog one selected servo back and forth so you
+  can see which physical motor a given id is.
 
 Run it from ``src/`` before anything else:
 
@@ -26,19 +28,28 @@ or, in production (installed under expctl):
 
 This module talks to the bus directly via ``scservo_sdk``; it deliberately does
 NOT import ``servodriver``/``config``, so it is safe to run before the YAML
-files exist. It never enables torque and never commands a position, so no servo
-moves -- the only writes are to the ID / phase / EEPROM-lock registers.
+files exist. The only action that moves a servo is "Identify a servo", which
+jogs the one you pick and returns it to where it started; every other step only
+reads, or writes the ID / phase / EEPROM-lock registers.
 """
 
 import argparse
+import contextlib
 import glob
 import importlib
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+try:
+    import curses
+except Exception:  # pragma: no cover - curses is absent on some platforms (e.g. Windows)
+    curses = None
 
 # --- YAML backend ------------------------------------------------------------
 # The wizard round-trips the config files so the rich comments in the templates
@@ -108,6 +119,7 @@ _resolve_yaml_backend()
 # --- STS control-table addresses used for first-time setup -------------------
 ADDR_ID = 5         # bus ID (EEPROM)
 ADDR_PHASE = 18     # phase setting / feedback mode (EEPROM)
+ADDR_TORQUE_ENABLE = 40  # RAM; 1 = hold. Used only by the "identify" jog.
 PHASE_SINGLE_TURN = 108  # factory default (single-turn feedback)
 PHASE_MULTI_TURN = 124   # 108 + BIT4 -> report full multi-turn angle
 
@@ -225,19 +237,53 @@ def _seq(values, flow=False):
     return list(values)
 
 
+def _channel_node(sid, name):
+    """A single inline ``{id: , name: }`` channel entry (flow style under ruamel)."""
+    if _RUAMEL:
+        m = CommentedMap()
+        m["id"] = int(sid)
+        m["name"] = SingleQuotedScalarString(str(name))
+        m.fa.set_flow_style()
+        return m
+    return {"id": int(sid), "name": str(name)}
+
+
 def _build_channels(rows):
     """rows = [(id, name), ...] -> block list of inline {id: , name: } maps."""
     out = CommentedSeq() if _RUAMEL else []
     for sid, name in rows:
-        if _RUAMEL:
-            m = CommentedMap()
-            m["id"] = int(sid)
-            m["name"] = SingleQuotedScalarString(str(name))
-            m.fa.set_flow_style()
-            out.append(m)
-        else:
-            out.append({"id": int(sid), "name": str(name)})
+        out.append(_channel_node(sid, name))
     return out
+
+
+# Channel-map lookups/mutators keyed by servo id, used by the TUI to persist
+# edits back into machine.yaml's servo.channels list.
+def _channel_for_id(channels, sid):
+    for c in channels:
+        if int(c["id"]) == int(sid):
+            return c
+    return None
+
+
+def _channel_name(channels, sid):
+    c = _channel_for_id(channels, sid)
+    return str(c["name"]) if c is not None else ""
+
+
+def _set_channel_id(channels, old_id, new_id):
+    c = _channel_for_id(channels, old_id)
+    if c is not None:
+        c["id"] = int(new_id)
+    else:
+        channels.append(_channel_node(new_id, ""))
+
+
+def _set_channel_name(channels, sid, name):
+    c = _channel_for_id(channels, sid)
+    if c is not None:
+        c["name"] = SingleQuotedScalarString(str(name)) if _RUAMEL else str(name)
+    else:
+        channels.append(_channel_node(sid, name))
 
 
 # =============================================================================
@@ -327,6 +373,7 @@ class Bus:
         self.port = port
         self.ph = ph
         self.OK = comm_success
+        self.device = None   # serial device path, set by open()
 
     @classmethod
     def open(cls, devices, baudrate):
@@ -345,7 +392,9 @@ class Bus:
                     port.closePort()
                     continue
                 print(f"  opened {dev} @ {baudrate} baud")
-                return cls(port, sms_sts(port), COMM_SUCCESS)
+                inst = cls(port, sms_sts(port), COMM_SUCCESS)
+                inst.device = str(dev)
+                return inst
             except Exception as e:
                 print(f"  {dev}: {e}")
         print("  could not open any serial device")
@@ -373,6 +422,32 @@ class Bus:
         res, _ = self.ph.write1ByteTxRx(sid, addr, value)
         self.ph.LockEprom(sid if lock_id is None else lock_id)
         return res == self.OK
+
+    def identify(self, sid, sweep=350, speed=1500, acc=30, cycles=3, settle=0.6):
+        """Jog one servo back and forth so you can see which motor it is.
+
+        Reads the present position, enables torque, wiggles +/- ``sweep`` counts
+        around it a few times, returns to the start, then disables torque. This
+        is the ONLY operation in this module that moves a servo.
+        """
+        pos, comm, _ = self.ph.ReadPos(sid)
+        if comm != self.OK:
+            print(f"    id {sid}: not responding")
+            return False
+        base = pos if 0 <= pos <= 4095 else 2048   # keep the wiggle inside one turn
+        lo, hi = max(0, base - sweep), min(4095, base + sweep)
+        self.ph.write1ByteTxRx(sid, ADDR_TORQUE_ENABLE, 1)
+        try:
+            for _ in range(cycles):
+                self.ph.WritePosEx(sid, hi, speed, acc)
+                time.sleep(settle)
+                self.ph.WritePosEx(sid, lo, speed, acc)
+                time.sleep(settle)
+            self.ph.WritePosEx(sid, base, speed, acc)   # back to where it started
+            time.sleep(settle)
+        finally:
+            self.ph.write1ByteTxRx(sid, ADDR_TORQUE_ENABLE, 0)
+        return True
 
     def close(self):
         try:
@@ -474,11 +549,24 @@ def register_setup(devices, baudrate, channels, id_max):
             found = bus.scan(range(1, id_max + 1))
             print(f"  servos now on the bus: {found if found else 'none'}")
 
+        # Read Register 18 first so you can see which servos still need it set.
+        targets = found or [int(c["id"]) for c in channels]
+        if targets:
+            print(f"  current Register 18 ({PHASE_SINGLE_TURN}=single-turn, "
+                  f"{PHASE_MULTI_TURN}=multi-turn):")
+            for sid in targets:
+                cur = bus.read1(sid, ADDR_PHASE)
+                if cur is None:
+                    print(f"    id {sid}: no response")
+                else:
+                    tag = {PHASE_MULTI_TURN: "  (multi-turn, already enabled)",
+                           PHASE_SINGLE_TURN: "  (single-turn)"}.get(cur, "")
+                    print(f"    id {sid}: {cur}{tag}")
+
         if confirm(
             "enable hardware multi-turn (Register 18 -> 124) on the servos?",
             default=True,
         ):
-            targets = found or [int(c["id"]) for c in channels]
             setup_multiturn(bus, targets)
     finally:
         bus.close()
@@ -729,7 +817,7 @@ def _bus_params(machine_cfg, machine_path):
 
 
 # =============================================================================
-# Entry point
+# CLI arguments
 # =============================================================================
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="First-run setup wizard for the servo aligner.")
@@ -741,19 +829,815 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+# =============================================================================
+# Menu actions -- each is self-contained so it can run on its own or as part of
+# the guided flow. Config-editing actions need the YAML round-tripper; bus
+# actions need a configured machine.yaml.
+# =============================================================================
+def _require_backend():
+    """True if the comment-preserving round-tripper is active; else explain and False."""
+    if _RUAMEL:
+        return True
+    print(
+        "  ruyaml is not available, so the config files can't be read or written.\n"
+        f"  run the dependencies option first, or: {sys.executable} -m pip install ruyaml"
+    )
+    return False
+
+
+def do_dependencies(args):
+    section("Python dependencies")
+    if args.no_deps:
+        print("  --no-deps given; skipping dependency check")
+        return
+    install_dependencies()
+
+
+def do_machine(config_dir, scan_max):
+    section("machine.yaml  -- hardware, channel map & masks")
+    if not _require_backend():
+        return
+    machine, machine_path = prepare_config("machine", config_dir)
+    if machine is not None:
+        edit_machine(machine, scan_max)
+        write_config(machine, machine_path)
+
+
+def do_calibration(config_dir):
+    section("calibration.yaml  -- optics & optimizer tuning")
+    if not _require_backend():
+        return
+    calib, calib_path = prepare_config("calibration", config_dir)
+    if calib is not None:
+        if confirm(
+            "walk through calibration.yaml now? (most values can keep their template\n"
+            "defaults and be tuned later during calibration)",
+            default=True,
+        ):
+            edit_mapping(calib, gate=True)
+        write_config(calib, calib_path)
+
+
+def do_bus(config_dir, scan_max, args):
+    section("servo bus  -- ids & multi-turn (Register 18)")
+    if args.no_bus:
+        print("  --no-bus given; skipping bus / register setup")
+        return
+    if not _require_backend():
+        return
+    devices, baud, channels = _bus_params(None, config_dir / "machine.yaml")
+    if not devices:
+        print("  no serial devices configured -- set up machine.yaml first; skipping")
+        return
+    register_setup(devices, baud, channels, scan_max)
+
+
+def do_scan_bus(config_dir, scan_max):
+    section("scan the bus  -- list connected servos")
+    if not _require_backend():
+        return
+    devices, baud, _ = _bus_params(None, config_dir / "machine.yaml")
+    if not devices:
+        print("  no serial devices configured -- set up machine.yaml first; skipping")
+        return
+    found = scan_for_channels(devices, baud, scan_max)
+    if found:
+        print(f"  servos on the bus (id order): {found}")
+    elif found is not None:
+        print("  no servos found on the bus")
+
+
+def do_identify(config_dir, scan_max):
+    section("identify a servo  -- jog the selected motor so you can spot it")
+    if not _require_backend():
+        return
+    devices, baud, channels = _bus_params(None, config_dir / "machine.yaml")
+    if not devices:
+        print("  no serial devices configured -- set up machine.yaml first; skipping")
+        return
+    bus = Bus.open(devices, baud)
+    if bus is None:
+        return
+    try:
+        found = bus.scan(range(1, scan_max + 1))
+        if not found:
+            print("  no servos found on the bus")
+            return
+        names = {int(c["id"]): str(c["name"]) for c in channels}
+        print("  servos on the bus:")
+        for sid in found:
+            label = f"  ({names[sid]})" if sid in names else ""
+            print(f"    id {sid}{label}")
+        while True:
+            sid = ask_int("which id to jog? (0 to stop)", found[0])
+            if sid == 0:
+                break
+            if sid not in found and not confirm(
+                f"  id {sid} wasn't detected; try anyway?", default=False
+            ):
+                continue
+            print(f"  jogging id {sid} -- watch which motor moves ...")
+            bus.identify(sid)
+            if not confirm("  identify another?", default=True):
+                break
+    finally:
+        bus.close()
+
+
+def guided_setup(args, config_dir, scan_max):
+    """The original end-to-end flow: dependencies -> machine -> calibration -> bus."""
+    do_dependencies(args)
+    if not _RUAMEL:
+        print(
+            "\n  ruyaml is not available, so the config files can't be created/edited.\n"
+            f"  install it and re-run:  {sys.executable} -m pip install ruyaml"
+        )
+        return
+    do_machine(config_dir, scan_max)
+    do_calibration(config_dir)
+    do_bus(config_dir, scan_max, args)
+    print(
+        "\nGuided setup done. Next steps:\n"
+        "  - sanity-check config/machine.yaml and config/calibration.yaml\n"
+        "  - run `python STSServer.py set_zero` (or `home`) to set the servo zeros\n"
+        "  - see doc/motor.md for the register details and CLAUDE.md for the workflow"
+    )
+
+
+# =============================================================================
+# Curses TUI (a menuconfig/raspi-config-style keyboard-driven page)
+#
+# Navigation: up/down (or k/j) move, left/right change a toggle, Enter selects,
+# q/ESC (or the "Back"/"Exit" row) backs out. Every screen -- main menu, servo
+# pages, config-file editors, dependencies -- is built from the same item
+# language (_it_action / _it_run / _it_toggle) and drawn by _tui_page. The bus
+# helpers and config writers print to stdout, which would corrupt the screen, so
+# those calls run under _quiet(); only streaming pip output drops out of curses
+# (_with_suspend) and comes back.
+# =============================================================================
+def _tui_available():
+    return curses is not None and INTERACTIVE and not os.environ.get("SERVO_INIT_NOTUI")
+
+
+@contextlib.contextmanager
+def _quiet():
+    """Swallow stdout (the bus helpers print) so it can't corrupt the curses screen."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
+
+
+def _safe_addstr(win, y, x, text, attr=0):
+    h, w = win.getmaxyx()
+    if 0 <= y < h and 0 <= x < w:
+        try:
+            win.addstr(y, x, str(text)[: max(0, w - x - 1)], attr)
+        except curses.error:
+            pass
+
+
+# --- Theme: white background, black-on-white text, black highlight bar -------
+def _init_theme(stdscr):
+    if curses.has_colors():
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)  # normal
+        curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)  # selected
+        stdscr.bkgd(" ", curses.color_pair(1))
+
+
+def _attr_normal():
+    return curses.color_pair(1) if curses.has_colors() else curses.A_NORMAL
+
+
+def _attr_select():
+    return curses.color_pair(2) if curses.has_colors() else curses.A_REVERSE
+
+
+# --- Status line: the bottom row always shows the last action's feedback -----
+_STATUS = {"text": ""}
+
+
+def _status(msg):
+    _STATUS["text"] = str(msg)
+
+
+def _draw_status(stdscr):
+    h, _w = stdscr.getmaxyx()
+    try:
+        stdscr.move(h - 1, 0)
+        stdscr.clrtoeol()
+    except curses.error:
+        pass
+    if _STATUS["text"]:
+        _safe_addstr(stdscr, h - 1, 1, _STATUS["text"], _attr_normal() | curses.A_BOLD)
+
+
+def _flash_status(stdscr, msg):
+    """Set the status line and paint it now (for feedback before a blocking call)."""
+    _status(msg)
+    _draw_status(stdscr)
+    stdscr.refresh()
+
+
+# --- One menu "language" shared by every page --------------------------------
+# A page is built from a list of items. There are three kinds, so every screen
+# (main menu, servo list, per-servo page) reads and behaves the same way:
+#   _it_action(text, value) -- Enter returns `value` to the caller (navigation)
+#   _it_run(text, fn)       -- Enter runs fn() in place (edit a field, jog, ...)
+#   _it_toggle(text, fn)    -- left/right (or Enter) runs fn(delta), delta -1/+1
+def _it_action(text, value):
+    return {"kind": "action", "text": text, "value": value}
+
+
+def _it_run(text, on_enter):
+    return {"kind": "run", "text": text, "on_enter": on_enter}
+
+
+def _it_toggle(text, on_change):
+    return {"kind": "toggle", "text": text, "on_change": on_change}
+
+
+def _render_page(stdscr, title, subtitle, items, sel, footer):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    _safe_addstr(stdscr, 0, 1, title, _attr_normal() | curses.A_BOLD)
+    top = 2
+    if subtitle:
+        _safe_addstr(stdscr, 1, 1, subtitle, _attr_normal() | curses.A_DIM)
+        top = 3
+    for i, item in enumerate(items):
+        y = top + i
+        if y >= h - 2:
+            break
+        attr = _attr_select() if i == sel else _attr_normal()
+        _safe_addstr(stdscr, y, 2, f"{item['text']:<{max(0, w - 4)}}", attr)
+    _safe_addstr(stdscr, h - 2, 1, footer, _attr_normal() | curses.A_DIM)
+    _draw_status(stdscr)
+    stdscr.refresh()
+
+
+def _tui_page(stdscr, title, build, subtitle=None,
+              footer="up/down move - Enter select - q back"):
+    """Render a page and drive it. `build()` returns a fresh item list each loop
+    so any values shown stay live. Returns the chosen action's value, or None on
+    q/ESC. title/subtitle may be strings or callables."""
+    sel = 0
+    while True:
+        items = build()
+        if not items:
+            return None
+        sel = max(0, min(sel, len(items) - 1))
+        _render_page(stdscr, title() if callable(title) else title,
+                     subtitle() if callable(subtitle) else subtitle, items, sel, footer)
+        c = stdscr.getch()
+        item = items[sel]
+        kind = item["kind"]
+        if c in (curses.KEY_UP, ord("k")):
+            sel = (sel - 1) % len(items)
+        elif c in (curses.KEY_DOWN, ord("j")):
+            sel = (sel + 1) % len(items)
+        elif c in (ord("q"), 27):
+            return None
+        elif c == curses.KEY_LEFT and kind == "toggle":
+            item["on_change"](-1)
+        elif c == curses.KEY_RIGHT and kind == "toggle":
+            item["on_change"](+1)
+        elif c in (curses.KEY_ENTER, 10, 13):
+            if kind == "action":
+                return item["value"]
+            if kind == "toggle":
+                item["on_change"](+1)
+            else:  # "run"
+                item["on_enter"]()
+
+
+def _tui_message(stdscr, lines, wait=True):
+    if isinstance(lines, str):
+        lines = [lines]
+    stdscr.erase()
+    for i, ln in enumerate(lines):
+        _safe_addstr(stdscr, 1 + i, 2, ln, _attr_normal())
+    h, _w = stdscr.getmaxyx()
+    if wait:
+        _safe_addstr(stdscr, h - 2, 1, "Press any key to continue ...",
+                     _attr_normal() | curses.A_DIM)
+    _draw_status(stdscr)
+    stdscr.refresh()
+    if wait:
+        stdscr.getch()
+
+
+def _tui_input(stdscr, prompt, default=""):
+    """Read a line at the bottom of the screen; empty reply keeps the default."""
+    h, w = stdscr.getmaxyx()
+    y = h - 2
+    msg = f"{prompt} [{default}]: " if str(default) != "" else f"{prompt}: "
+    try:
+        stdscr.move(y, 0)
+        stdscr.clrtoeol()
+    except curses.error:
+        pass
+    _safe_addstr(stdscr, y, 1, msg, _attr_normal())
+    stdscr.refresh()
+    curses.echo()
+    curses.curs_set(1)
+    try:
+        raw = stdscr.getstr(y, min(1 + len(msg), w - 2), 64)
+        s = raw.decode("utf-8", "ignore").strip() if raw is not None else ""
+    except Exception:
+        s = ""
+    finally:
+        curses.noecho()
+        curses.curs_set(0)
+    return s if s != "" else str(default)
+
+
+def _tui_input_int(stdscr, prompt, default):
+    while True:
+        s = _tui_input(stdscr, prompt, default)
+        try:
+            return int(str(s), 0)   # base 0 also accepts 0x.. / 0b..
+        except ValueError:
+            _tui_message(stdscr, [f"'{s}' is not an integer -- try again."])
+
+
+def servo_config_tui(stdscr, config_dir, scan_max):
+    """Scan the bus, list servos, edit each, and persist the channel map back to
+    machine.yaml (id / name changes are written to servo.channels)."""
+    if not _RUAMEL:
+        _tui_message(stdscr, ["ruyaml is not available, so machine.yaml can't be read/written.",
+                              "Run the 'Python dependencies' option first."])
+        return
+    machine_path = config_dir / "machine.yaml"
+    if not machine_path.exists():
+        _tui_message(stdscr, ["machine.yaml not found.",
+                              "Create it with the 'machine.yaml' option first."])
+        return
+    with _quiet():
+        cfg = _load_text(machine_path.read_text())
+    try:
+        devices = [str(d) for d in cfg["serial"]["devices"]]
+        baud = int(cfg["serial"]["baudrate"])
+        channels = cfg["servo"]["channels"]
+    except (KeyError, TypeError):
+        _tui_message(stdscr, ["machine.yaml is missing its serial / servo sections."])
+        return
+    if not devices:
+        _tui_message(stdscr, ["No serial devices configured in machine.yaml."])
+        return
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink):
+        bus = Bus.open(devices, baud)
+    if bus is None:
+        _tui_message(stdscr, ["Could not open the serial bus:",
+                              sink.getvalue().strip() or "(no device opened)"])
+        return
+
+    dirty = [False]
+    def mark_dirty():
+        dirty[0] = True
+
+    # Cache the scan so navigating the list doesn't re-ping the bus on every key;
+    # refresh only on entry, on "Rescan", and after editing a servo.
+    cache = {"found": [], "phase": {}}
+
+    def rescan():
+        _flash_status(stdscr, "scanning the bus ...")
+        with _quiet():
+            cache["found"] = bus.scan(range(1, scan_max + 1))
+            cache["phase"] = {sid: bus.read1(sid, ADDR_PHASE) for sid in cache["found"]}
+        _status(f"found {len(cache['found'])} servo(s): {cache['found'] or 'none'}")
+
+    def build():
+        items = [_it_action("Rescan bus", "rescan")]
+        for sid in cache["found"]:
+            nm = _channel_name(channels, sid)
+            phase = {PHASE_SINGLE_TURN: "single-turn",
+                     PHASE_MULTI_TURN: "multi-turn"}.get(cache["phase"].get(sid), "?")
+            tag = f"  ({nm})" if nm else "  (unmapped)"
+            items.append(_it_action(f"id {sid}{tag}    [{phase}]", ("servo", sid)))
+        if not cache["found"]:
+            items.append(_it_action("(no servos detected -- check wiring/power, then Rescan)", "rescan"))
+        items.append(_it_action("Back", None))
+        return items
+
+    def subtitle():
+        return f"bus: {bus.device} @ {baud}    {len(cache['found'])} servo(s) found"
+
+    rescan()
+    try:
+        while True:
+            choice = _tui_page(stdscr, "Servo configuration", build, subtitle=subtitle,
+                               footer="up/down move - Enter open - q back")
+            if choice is None:
+                break
+            if choice == "rescan":
+                rescan()
+            elif isinstance(choice, tuple) and choice[0] == "servo":
+                _servo_submenu(stdscr, bus, choice[1], channels, mark_dirty)
+                rescan()   # reflect any id / feedback change back in the list
+    finally:
+        with _quiet():
+            bus.close()
+
+    if dirty[0]:
+        with _quiet():
+            write_config(cfg, machine_path)
+        _status(f"saved channel map to {machine_path.name}")
+
+
+def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
+    """Per-servo page built from the shared item language. Editing id/name updates
+    the channel map (mark_dirty); the feedback row is a left/right toggle applied
+    to Register 18 on the spot. Every action reports on the status line."""
+    state = {"cur": sid}
+
+    def change_id():
+        cur = state["cur"]
+        new = _tui_input_int(stdscr, "new id (1-252)", cur)
+        if not 1 <= new <= 252:
+            _status("id out of range (1-252)")
+        elif new == cur:
+            _status("id unchanged")
+        else:
+            with _quiet():
+                ok = bus.write_eeprom1(cur, ADDR_ID, new, lock_id=new) and bus.ping(new)
+            if ok:
+                _set_channel_id(channels, cur, new)
+                mark_dirty()
+                state["cur"] = new
+                _status(f"id {cur} -> {new}  (changed; saves on exit)")
+            else:
+                _status(f"id {cur} -> {new} FAILED (check wiring/power)")
+
+    def change_name():
+        cur = state["cur"]
+        name = _channel_name(channels, cur)
+        new = _tui_input(stdscr, "name", name)
+        if new == name:
+            _status("name unchanged")
+        else:
+            _set_channel_name(channels, cur, new)
+            mark_dirty()
+            _status(f"id {cur} name -> '{new}'  (saves on exit)")
+
+    def toggle_phase(_delta):
+        cur = state["cur"]
+        with _quiet():
+            ph = bus.read1(cur, ADDR_PHASE)
+            target = PHASE_SINGLE_TURN if ph == PHASE_MULTI_TURN else PHASE_MULTI_TURN
+            bus.write_eeprom1(cur, ADDR_PHASE, target)
+            chk = bus.read1(cur, ADDR_PHASE)
+        mode = {PHASE_MULTI_TURN: "multi-turn", PHASE_SINGLE_TURN: "single-turn"}.get(chk, "?")
+        ok = chk == target
+        _status(f"id {cur} Register 18 -> {chk} ({mode})" + ("" if ok else "  WRITE FAILED"))
+
+    def jog():
+        cur = state["cur"]
+        _flash_status(stdscr, f"jogging id {cur} -- watch which motor moves ...")
+        with _quiet():
+            bus.identify(cur)
+        _status(f"id {cur}: done jogging")
+
+    def build():
+        cur = state["cur"]
+        name = _channel_name(channels, cur)
+        with _quiet():
+            ph = bus.read1(cur, ADDR_PHASE)
+        fb = "< multi-turn (124) >" if ph == PHASE_MULTI_TURN else "< single-turn (108) >"
+        return [
+            _it_run(f"Bus ID    : {cur}", change_id),
+            _it_run(f"Name      : {name or '(unnamed)'}", change_name),
+            _it_toggle(f"Feedback  : {fb}", toggle_phase),
+            _it_run("Identify (jog this servo)", jog),
+            _it_action("Back", "back"),
+        ]
+
+    def title():
+        cur = state["cur"]
+        name = _channel_name(channels, cur)
+        return f"Servo id {cur}" + (f"  ({name})" if name else "")
+
+    _tui_page(stdscr, title, build,
+              footer="up/down move - left/right change - Enter select - q back")
+
+
+def _with_suspend(stdscr, fn):
+    """Run fn() with curses paused -- for streaming subprocesses like pip."""
+    curses.def_prog_mode()
+    curses.endwin()
+    try:
+        fn()
+        try:
+            input("\n[ press Enter to return to the menu ] ")
+        except EOFError:
+            pass
+    finally:
+        curses.reset_prog_mode()
+        _init_theme(stdscr)
+        stdscr.clear()
+        stdscr.refresh()
+
+
+# --- Generic curses editor for a loaded YAML tree (same item language) -------
+def _coerce_like(old, raw):
+    """Parse raw text to old's type, keeping ruamel hex/quote styling where easy."""
+    if isinstance(old, bool):
+        return raw.strip().lower() in ("y", "yes", "true", "1")
+    if isinstance(old, int):  # bool already handled above
+        val = int(raw, 0)
+        return _hexint(val) if (_RUAMEL and HexInt is not None and isinstance(old, HexInt)) else val
+    if isinstance(old, float):
+        return float(raw)
+    if _RUAMEL and SingleQuotedScalarString is not None and isinstance(old, SingleQuotedScalarString):
+        return SingleQuotedScalarString(raw)
+    return raw
+
+
+def _is_num(x):
+    return not isinstance(x, bool) and isinstance(x, (int, float))
+
+
+def _edit_mapping_tui(stdscr, mapping, title):
+    """Edit a dict in place: scalars prompt, bools toggle, dicts/lists recurse."""
+    def edit_scalar(k):
+        def f():
+            old = mapping[k]
+            raw = _tui_input(stdscr, str(k), "" if old is None else old)
+            try:
+                mapping[k] = _coerce_like(old, raw)
+                _status(f"{k} = {mapping[k]}")
+            except ValueError:
+                _status(f"{k}: '{raw}' is not a valid {type(old).__name__}")
+        return f
+
+    def toggle_bool(k):
+        def f(_d):
+            mapping[k] = not bool(mapping[k])
+            _status(f"{k} = {mapping[k]}")
+        return f
+
+    def edit_numlist(k):
+        def f():
+            old = mapping[k]
+            raw = _tui_input(stdscr, f"{k} ({len(old)} numbers, space/comma sep)", _fmt_nums(old))
+            try:
+                old[:] = _parse_nums(raw, isinstance(old[0], int))   # keep the list object + flow style
+                _status(f"{k} = [{_fmt_nums(old)}]")
+            except (ValueError, IndexError):
+                _status(f"{k}: couldn't parse numbers")
+        return f
+
+    def edit_strlist(k):
+        def f():
+            old = mapping[k]
+            raw = _tui_input(stdscr, f"{k} (comma separated)", ", ".join(str(x) for x in old))
+            old[:] = [s.strip() for s in raw.split(",") if s.strip()]
+            _status(f"{k}: {len(old)} item(s)")
+        return f
+
+    def dive_map(k):
+        return lambda: _edit_mapping_tui(stdscr, mapping[k], f"{title} / {k}")
+
+    def dive_entries(k):
+        return lambda: _edit_seq_tui(stdscr, mapping[k], f"{title} / {k}")
+
+    def dive_rows(k):
+        return lambda: _edit_rows_tui(stdscr, mapping[k], f"{title} / {k}")
+
+    def build():
+        items = []
+        for k in list(mapping.keys()):
+            v = mapping[k]
+            kl = f"{str(k):<16}"
+            if isinstance(v, bool):
+                items.append(_it_toggle(f"{kl}: < {v} >", toggle_bool(k)))
+            elif isinstance(v, (int, float)) or isinstance(v, str) or v is None:
+                items.append(_it_run(f"{kl}: {v}", edit_scalar(k)))
+            elif isinstance(v, dict):
+                items.append(_it_run(f"{kl}: ... ({len(v)} keys)", dive_map(k)))
+            elif isinstance(v, list):
+                if v and all(_is_num(x) for x in v):
+                    items.append(_it_run(f"{kl}: [{_fmt_nums(v)}]", edit_numlist(k)))
+                elif v and all(isinstance(x, str) for x in v):
+                    items.append(_it_run(f"{kl}: [{', '.join(map(str, v))}]", edit_strlist(k)))
+                elif v and all(isinstance(x, dict) for x in v):
+                    items.append(_it_run(f"{kl}: ({len(v)} entries)", dive_entries(k)))
+                elif v and all(isinstance(x, list) for x in v):
+                    items.append(_it_run(f"{kl}: ({len(v)} rows)", dive_rows(k)))
+                else:
+                    items.append(_it_run(f"{kl}: ({len(v)} items)",
+                                         lambda kk=k: _status(f"{kk}: not editable here")))
+            else:
+                items.append(_it_run(f"{kl}: (unsupported)", lambda kk=k: _status(f"{kk}: not editable")))
+        items.append(_it_action("Back", None))
+        return items
+
+    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+
+
+def _edit_seq_tui(stdscr, seq, title):
+    """Edit a list of mappings (e.g. servo.channels): pick an entry to edit."""
+    def build():
+        items = []
+        for i, entry in enumerate(seq):
+            summary = ", ".join(f"{kk}={vv}" for kk, vv in entry.items())
+            items.append(_it_run(f"[{i}] {summary}",
+                                  (lambda j: lambda: _edit_mapping_tui(stdscr, seq[j], f"{title}[{j}]"))(i)))
+        items.append(_it_action("Back", None))
+        return items
+
+    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+
+
+def _edit_rows_tui(stdscr, seq, title):
+    """Edit a list of numeric rows (e.g. coupling vectors)."""
+    def edit_row(i):
+        def f():
+            row = seq[i]
+            raw = _tui_input(stdscr, f"row {i} ({len(row)} numbers)", _fmt_nums(row))
+            try:
+                row[:] = _parse_nums(raw, all(isinstance(x, int) for x in row))
+                _status(f"row {i} = [{_fmt_nums(row)}]")
+            except ValueError:
+                _status(f"row {i}: couldn't parse numbers")
+        return f
+
+    def build():
+        items = [_it_run(f"[{i}] [{_fmt_nums(row)}]", edit_row(i)) for i, row in enumerate(seq)]
+        items.append(_it_action("Back", None))
+        return items
+
+    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+
+
+def _prepare_config_tui(stdscr, name, config_dir):
+    """Load name.yaml for editing in curses (creating it from the template)."""
+    template = config_dir / f"{name}.template.yaml"
+    target = config_dir / f"{name}.yaml"
+    if not template.exists():
+        _tui_message(stdscr, [f"template {template.name} not found; cannot create {target.name}."])
+        return None, target
+    src = template
+    if target.exists():
+        choice = _tui_page(stdscr, f"{target.name} already exists", lambda: [
+            _it_action("Edit the existing file", "edit"),
+            _it_action("Overwrite from the template", "overwrite"),
+            _it_action("Back", None),
+        ], footer="up/down move - Enter select - q cancel")
+        if choice is None:
+            return None, target
+        src = template if choice == "overwrite" else target
+    with _quiet():
+        return _load_text(src.read_text()), target
+
+
+def _edit_config_tui(stdscr, name, config_dir, title):
+    if not _RUAMEL:
+        _tui_message(stdscr, ["ruyaml is required to edit the config files.",
+                              "Use 'Python dependencies' to install it first."])
+        return
+    cfg, target = _prepare_config_tui(stdscr, name, config_dir)
+    if cfg is None:
+        return
+    _edit_mapping_tui(stdscr, cfg, title)
+    with _quiet():
+        write_config(cfg, target)
+    _status(f"saved {target.name}")
+
+
+def deps_tui(stdscr):
+    req = _find_requirements()
+    if req is None:
+        _tui_message(stdscr, ["requirements.txt not found next to the project."])
+        return
+    pkgs = _parse_requirements(req)
+
+    def pip_install(full):
+        missing = _missing_packages(pkgs)
+        if not full and not missing:
+            _status("nothing to install -- all present")
+            return
+        cmd = [sys.executable, "-m", "pip", "install"] + (["-r", str(req)] if full else list(missing))
+
+        def run():
+            print(f"running: {' '.join(cmd)}\n")
+            try:
+                rc = subprocess.call(cmd)
+            except Exception as e:  # pragma: no cover
+                print(f"pip could not run: {e}")
+                rc = 1
+            importlib.invalidate_caches()
+            _resolve_yaml_backend()   # pick up a freshly-installed ruyaml
+            print("\npip finished" if rc == 0 else "\npip finished WITH ERRORS")
+
+        _with_suspend(stdscr, run)
+        still = _missing_packages(pkgs)
+        _status("all dependencies satisfied" if not still else f"still missing: {', '.join(still)}")
+
+    def build():
+        missing = set(_missing_packages(pkgs))
+        items = [_it_run(f"{dist:<18} [{'MISSING' if dist in missing else 'ok'}]",
+                         lambda: _status("(status only -- use the install actions below)"))
+                 for dist, _imp in pkgs]
+        if missing:
+            items.append(_it_run(f"Install the {len(missing)} missing package(s)", lambda: pip_install(False)))
+        items.append(_it_run("Install everything from requirements.txt", lambda: pip_install(True)))
+        items.append(_it_action("Back", None))
+        return items
+
+    _tui_page(stdscr, "Python dependencies", build,
+              subtitle=f"requirements: {req.name}", footer="up/down move - Enter select - q back")
+
+
+def guided_tui(stdscr, config_dir, scan_max):
+    deps_tui(stdscr)
+    if not _RUAMEL:
+        _tui_message(stdscr, ["ruyaml is still missing -- install it, then edit the configs."])
+        return
+    _edit_config_tui(stdscr, "machine", config_dir, "machine.yaml")
+    _edit_config_tui(stdscr, "calibration", config_dir, "calibration.yaml")
+    servo_config_tui(stdscr, config_dir, scan_max)
+    _status("guided setup complete")
+
+
+def run_tui(config_dir, scan_max):
+    def app(stdscr):
+        curses.curs_set(0)
+        _init_theme(stdscr)
+
+        def build():
+            return [
+                _it_action("Full guided setup  (dependencies, machine, calibration, bus)", "guided"),
+                _it_action("Python dependencies", "deps"),
+                _it_action("machine.yaml  (hardware, channel map, masks)", "machine"),
+                _it_action("calibration.yaml  (optics / optimizer tuning)", "calib"),
+                _it_action("Servo configuration  (scan bus, IDs, names, feedback, jog)", "servo"),
+                _it_action("Exit", "exit"),
+            ]
+
+        dispatch = {
+            "guided": lambda: guided_tui(stdscr, config_dir, scan_max),
+            "deps": lambda: deps_tui(stdscr),
+            "machine": lambda: _edit_config_tui(stdscr, "machine", config_dir, "machine.yaml"),
+            "calib": lambda: _edit_config_tui(stdscr, "calibration", config_dir, "calibration.yaml"),
+            "servo": lambda: servo_config_tui(stdscr, config_dir, scan_max),
+        }
+        while True:
+            choice = _tui_page(stdscr, "Servo-aligner setup", build,
+                               subtitle=f"config: {config_dir}",
+                               footer="up/down move - Enter select - q quit")
+            if choice in (None, "exit"):
+                break
+            dispatch[choice]()
+
+    curses.wrapper(app)
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
+def run_menu(args, config_dir, scan_max):
+    options = [
+        ("Full guided setup (dependencies -> machine -> calibration -> bus)",
+         lambda: guided_setup(args, config_dir, scan_max)),
+        ("Check / install Python dependencies",
+         lambda: do_dependencies(args)),
+        ("Create or edit machine.yaml (hardware, channel map, masks)",
+         lambda: do_machine(config_dir, scan_max)),
+        ("Create or edit calibration.yaml (optics / optimizer tuning)",
+         lambda: do_calibration(config_dir)),
+        ("Servo bus: assign IDs & enable multi-turn (Register 18)",
+         lambda: do_bus(config_dir, scan_max, args)),
+        ("Scan the bus (list connected servo IDs)",
+         lambda: do_scan_bus(config_dir, scan_max)),
+        ("Identify a servo (jog the selected motor to spot it)",
+         lambda: do_identify(config_dir, scan_max)),
+    ]
+    while True:
+        print("\nWhat would you like to do?")
+        for i, (label, _) in enumerate(options, 1):
+            print(f"  {i}) {label}")
+        print("  q) Quit")
+        try:
+            raw = input("select [q]: ").strip().lower()
+        except EOFError:
+            break
+        if raw in ("", "q", "quit", "exit"):
+            break
+        try:
+            idx = int(raw)
+        except ValueError:
+            print(f"  enter a number 1-{len(options)}, or q to quit")
+            continue
+        if 1 <= idx <= len(options):
+            options[idx - 1][1]()
+        else:
+            print(f"  out of range (1-{len(options)})")
+
+
 def main(argv=None):
     args = parse_args(argv)
     scan_max = 252 if args.full_scan else args.scan_max
-
-    print(
-        "Servo-aligner setup wizard\n"
-        "--------------------------\n"
-        "Installs dependencies, creates config/machine.yaml + config/calibration.yaml\n"
-        "from the templates, then helps connect to the servos and set up their IDs and\n"
-        "multi-turn mode."
-    )
     config_dir = find_config_dir(args.config_dir)
-    print(f"config directory: {config_dir}")
 
     if not INTERACTIVE:
         for name in ("machine", "calibration"):
@@ -765,56 +1649,21 @@ def main(argv=None):
         print("non-interactive shell: copied templates only; edit the files by hand.")
         return
 
-    # 1) Python dependencies --------------------------------------------------
-    section("1/4  Python dependencies")
-    if args.no_deps:
-        print("  --no-deps given; skipping dependency check")
-    else:
-        install_dependencies()
-    if not _RUAMEL:
-        print(
-            "\nERROR: ruyaml is not available, so the config files cannot be created\n"
-            "or edited without dropping the template comments. Install it and re-run:\n"
-            f"    {sys.executable} -m pip install ruyaml"
-        )
+    # Preferred UI: a keyboard-driven curses page. Fall back to the plain text
+    # menu when curses isn't available or the terminal can't support it (set
+    # SERVO_INIT_NOTUI=1 to force the text menu).
+    if _tui_available():
+        run_tui(config_dir, scan_max)
         return
 
-    # 2) machine.yaml ---------------------------------------------------------
-    section("2/4  machine.yaml  -- hardware & connection")
-    machine, machine_path = prepare_config("machine", config_dir)
-    if machine is not None:
-        edit_machine(machine, scan_max)
-        write_config(machine, machine_path)
-
-    # 3) calibration.yaml -----------------------------------------------------
-    section("3/4  calibration.yaml  -- optics & optimizer tuning")
-    calib, calib_path = prepare_config("calibration", config_dir)
-    if calib is not None:
-        if confirm(
-            "walk through calibration.yaml now? (most values can keep their template\n"
-            "defaults and be tuned later during calibration)",
-            default=True,
-        ):
-            edit_mapping(calib, gate=True)
-        write_config(calib, calib_path)
-
-    # 4) servo bus: ids + multi-turn -----------------------------------------
-    section("4/4  servo bus  -- ids & multi-turn (Register 18)")
-    if args.no_bus:
-        print("  --no-bus given; skipping bus / register setup")
-    else:
-        devices, baud, channels = _bus_params(machine, machine_path)
-        if not devices:
-            print("  no serial devices configured; skipping")
-        elif confirm("do the servo register setup over the bus now?", default=True):
-            register_setup(devices, baud, channels, scan_max)
-
     print(
-        "\nDone. Next steps:\n"
-        "  - sanity-check config/machine.yaml and config/calibration.yaml\n"
-        "  - run `python STSServer.py set_zero` (or `home`) to set the servo zeros\n"
-        "  - see doc/motor.md for the register details and CLAUDE.md for the workflow"
+        "Servo-aligner setup\n"
+        "-------------------\n"
+        "Pick an action below: install dependencies, create/edit the config files,\n"
+        "or set up the servo bus. 'Full guided setup' runs them all in order."
     )
+    print(f"config directory: {config_dir}")
+    run_menu(args, config_dir, scan_max)
 
 
 if __name__ == "__main__":

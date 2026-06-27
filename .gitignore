@@ -177,7 +177,9 @@ dmypy.json
 # Real per-machine config lives in config/machine.yaml + config/calibration.yaml,
 # copied from the checked-in *.template.yaml files. Never commit the real ones.
 /config/machine.yaml
+/config/machine.yaml.bak
 /config/calibration.yaml
+/config/machine.yaml.bak
 
 # Runtime state: persisted encoder positions (state_folder, one file per board).
 /state/
