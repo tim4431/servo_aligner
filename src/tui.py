@@ -188,71 +188,105 @@ def _render_page(stdscr, title, subtitle, items, sel, footer):
     if subtitle:
         _safe_addstr(stdscr, 1, 1, subtitle, _attr_normal() | curses.A_DIM)
         top = 3
+    num_w = len(str(len(items) - 1)) if items else 1
     for i, item in enumerate(items):
         y = top + i
         if y >= h - 2:
             break
-        attr = _attr_select() if i == sel else _attr_normal()
-        _safe_addstr(stdscr, y, 2, f"{item['text']:<{max(0, w - 4)}}", attr)
+        selected = i == sel
+        # ">" marks the selected row, plus a highlight bar on the item itself
+        _safe_addstr(stdscr, y, 1, ">" if selected else " ", _attr_normal() | curses.A_BOLD)
+        attr = _attr_select() if selected else _attr_normal()
+        # Prefix every row with its index ("[0] ...") so it can be jumped to by
+        # typing the number (see _tui_page); width-pad so multi-digit lists line up.
+        label = f"[{i:>{num_w}}] {item['text']}"
+        _safe_addstr(stdscr, y, 3, f"{label:<{max(0, w - 5)}}", attr)
     _safe_addstr(stdscr, h - 2, 1, footer, _attr_normal() | curses.A_DIM)
     _draw_status(stdscr)
     stdscr.refresh()
 
 
 def _tui_page(stdscr, title, build, subtitle=None,
-              footer="up/down move - Enter select - q back",
+              footer="up/down move - [#] jump - Enter select - q back",
               edit_footer="left/right or type to change - Enter confirm - Esc cancel"):
     """Render a page and drive it. ``build()`` returns a fresh item list each loop
     so any values shown stay live. Returns the chosen action's value, or None on
     q/ESC. An ``_it_edit`` field enters inline edit mode on Enter; while editing,
-    arrows/typing change the working value and Enter/Esc commit/cancel."""
+    arrows/typing change the working value and Enter/Esc commit/cancel. Each row
+    is prefixed with its index ("[0] ..."); typing that number jumps the
+    selection to it (digits accumulate for two-digit lists, clearing after a
+    brief pause)."""
     sel = 0
     ed = None   # active _NumberEditor while a field is being edited, else None
-    while True:
-        items = build()
-        if not items:
-            return None
-        sel = max(0, min(sel, len(items) - 1))
-        t = title() if callable(title) else title
-        sub = subtitle() if callable(subtitle) else subtitle
-        if ed is not None:
-            shown = list(items)
-            row = dict(items[sel])
-            row["text"] = f"{row['prefix']}[ {ed.display()} ]"
-            shown[sel] = row
-            _render_page(stdscr, t, sub, shown, sel, edit_footer)
-        else:
-            _render_page(stdscr, t, sub, items, sel, footer)
-        c = stdscr.getch()
-        item = items[sel]
-        if ed is not None:
-            res = ed.handle(c)
-            if res == "commit":
-                item["on_set"](ed.value)
-                ed = None
-            elif res == "cancel":
-                ed = None
-            continue
-        kind = item["kind"]
-        if c in (curses.KEY_UP, ord("k")):
-            sel = (sel - 1) % len(items)
-        elif c in (curses.KEY_DOWN, ord("j")):
-            sel = (sel + 1) % len(items)
-        elif c in (ord("q"), 27):
-            return None
-        elif c == curses.KEY_LEFT and kind == "toggle":
-            item["on_change"](-1)
-        elif c == curses.KEY_RIGHT and kind == "toggle":
-            item["on_change"](+1)
-        elif c in (curses.KEY_ENTER, 10, 13):
-            if kind == "action":
-                return item["value"]
-            if kind == "edit":
-                ed = _NumberEditor(item["value"], **item["opts"])
-            elif kind == "toggle":
+    jump = ""   # line-number digits typed so far; self-clears on a getch timeout
+    try:
+        while True:
+            items = build()
+            if not items:
+                return None
+            sel = max(0, min(sel, len(items) - 1))
+            t = title() if callable(title) else title
+            sub = subtitle() if callable(subtitle) else subtitle
+            if ed is not None:
+                shown = list(items)
+                row = dict(items[sel])
+                row["text"] = f"{row['prefix']}[ {ed.display()} ]"
+                shown[sel] = row
+                _render_page(stdscr, t, sub, shown, sel, edit_footer)
+            else:
+                _render_page(stdscr, t, sub, items, sel, footer)
+            # While a jump number is pending, time out so it clears if the user
+            # stops typing; otherwise block waiting for a key as usual.
+            stdscr.timeout(600 if jump else -1)
+            c = stdscr.getch()
+            if c == -1:            # getch timed out -> the pending jump expired
+                jump = ""
+                continue
+            item = items[sel]
+            if ed is not None:
+                res = ed.handle(c)
+                if res == "commit":
+                    item["on_set"](ed.value)
+                    ed = None
+                elif res == "cancel":
+                    ed = None
+                continue
+            kind = item["kind"]
+            # Type a line number to jump straight to that row. Digits accumulate
+            # so two-digit indices work; a digit that would overflow starts a
+            # fresh number. Any non-digit key below ends the pending jump.
+            if 0 <= c < 256 and chr(c) in "0123456789":
+                cand = jump + chr(c)
+                if int(cand) < len(items):
+                    jump = cand
+                elif int(chr(c)) < len(items):
+                    jump = chr(c)
+                else:
+                    continue
+                sel = int(jump)
+                continue
+            jump = ""
+            if c in (curses.KEY_UP, ord("k")):
+                sel = (sel - 1) % len(items)
+            elif c in (curses.KEY_DOWN, ord("j")):
+                sel = (sel + 1) % len(items)
+            elif c in (ord("q"), 27):
+                return None
+            elif c == curses.KEY_LEFT and kind == "toggle":
+                item["on_change"](-1)
+            elif c == curses.KEY_RIGHT and kind == "toggle":
                 item["on_change"](+1)
-            else:  # "run"
-                item["on_enter"]()
+            elif c in (curses.KEY_ENTER, 10, 13):
+                if kind == "action":
+                    return item["value"]
+                if kind == "edit":
+                    ed = _NumberEditor(item["value"], **item["opts"])
+                elif kind == "toggle":
+                    item["on_change"](+1)
+                else:  # "run"
+                    item["on_enter"]()
+    finally:
+        stdscr.timeout(-1)   # restore blocking getch for other curses readers
 
 
 def _tui_message(stdscr, lines, wait=True):

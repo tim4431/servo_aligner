@@ -969,8 +969,9 @@ def guided_setup(args, config_dir, scan_max):
 # =============================================================================
 # Curses TUI (a menuconfig/raspi-config-style keyboard-driven page)
 #
-# Navigation: up/down (or k/j) move, left/right change a toggle, Enter selects,
-# q/ESC (or the "Back"/"Exit" row) backs out. Every screen -- main menu, servo
+# Navigation: up/down (or k/j) move, typing a row's "[#]" number jumps to it,
+# left/right change a toggle, Enter selects, q/ESC (or the "Back"/"Exit" row)
+# backs out. Every screen -- main menu, servo
 # pages, config-file editors, dependencies -- is built from the same item
 # language (_it_action / _it_run / _it_toggle) and drawn by _tui_page. The bus
 # helpers and config writers print to stdout, which would corrupt the screen, so
@@ -1050,7 +1051,7 @@ def servo_config_tui(stdscr, config_dir, scan_max):
     try:
         while True:
             choice = _tui_page(stdscr, "Servo configuration", build, subtitle=subtitle,
-                               footer="up/down move - Enter open - q back")
+                               footer="up/down move - [#] jump - Enter open - q back")
             if choice is None:
                 break
             if choice == "rescan":
@@ -1280,7 +1281,7 @@ def _edit_mapping_tui(stdscr, mapping, title, mark_dirty):
         items.append(_it_action("Back", None))
         return items
 
-    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+    _tui_page(stdscr, title, build, footer="up/down move - [#] jump - Enter edit - q back")
 
 
 def _edit_seq_tui(stdscr, seq, title, mark_dirty):
@@ -1295,7 +1296,7 @@ def _edit_seq_tui(stdscr, seq, title, mark_dirty):
         items.append(_it_action("Back", None))
         return items
 
-    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+    _tui_page(stdscr, title, build, footer="up/down move - [#] jump - Enter edit - q back")
 
 
 def _edit_rows_tui(stdscr, seq, title, mark_dirty):
@@ -1317,7 +1318,7 @@ def _edit_rows_tui(stdscr, seq, title, mark_dirty):
         items.append(_it_action("Back", None))
         return items
 
-    _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
+    _tui_page(stdscr, title, build, footer="up/down move - [#] jump - Enter edit - q back")
 
 
 def _prepare_config_tui(stdscr, name, config_dir):
@@ -1335,7 +1336,7 @@ def _prepare_config_tui(stdscr, name, config_dir):
             _it_action("Edit the existing file", "edit"),
             _it_action("Overwrite from the template", "overwrite"),
             _it_action("Leave it unchanged (cancel)", None),
-        ], footer="up/down move - Enter select - q cancel")
+        ], footer="up/down move - [#] jump - Enter select - q cancel")
         if choice is None:
             return None, target, False
         src = template if choice == "overwrite" else target
@@ -1361,7 +1362,7 @@ def _edit_config_tui(stdscr, name, config_dir, title):
     choice = _tui_page(stdscr, f"Save changes to {target.name}?", lambda: [
         _it_action("Save changes", "save"),
         _it_action("Discard changes (leave the file unchanged)", "discard"),
-    ], footer="up/down move - Enter select")
+    ], footer="up/down move - [#] jump - Enter select")
     if choice == "save":
         with _quiet():
             write_config(cfg, target)
@@ -1411,7 +1412,7 @@ def deps_tui(stdscr):
         return items
 
     _tui_page(stdscr, "Python dependencies", build,
-              subtitle=f"requirements: {req.name}", footer="up/down move - Enter select - q back")
+              subtitle=f"requirements: {req.name}", footer="up/down move - [#] jump - Enter select - q back")
 
 
 def guided_tui(stdscr, config_dir, scan_max):
@@ -1450,7 +1451,7 @@ def run_tui(config_dir, scan_max):
         while True:
             choice = _tui_page(stdscr, "Servo-aligner setup", build,
                                subtitle=f"config: {config_dir}",
-                               footer="up/down move - Enter select - q quit")
+                               footer="up/down move - [#] jump - Enter select - q quit")
             if choice in (None, "exit"):
                 break
             dispatch[choice]()
