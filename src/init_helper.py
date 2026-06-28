@@ -46,10 +46,12 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    import curses
-except Exception:  # pragma: no cover - curses is absent on some platforms (e.g. Windows)
-    curses = None
+# Shared curses TUI toolkit (item language, theme, status line, input helpers).
+from tui import (
+    curses, tui_available, _quiet, _init_theme, _status, _flash_status,
+    _it_action, _it_run, _it_toggle, _it_edit, _to_int, _tui_page, _tui_message,
+    _tui_input,
+)
 
 # --- YAML backend ------------------------------------------------------------
 # The wizard round-trips the config files so the rich comments in the templates
@@ -976,187 +978,9 @@ def guided_setup(args, config_dir, scan_max):
 # (_with_suspend) and comes back.
 # =============================================================================
 def _tui_available():
-    return curses is not None and INTERACTIVE and not os.environ.get("SERVO_INIT_NOTUI")
-
-
-@contextlib.contextmanager
-def _quiet():
-    """Swallow stdout (the bus helpers print) so it can't corrupt the curses screen."""
-    with contextlib.redirect_stdout(io.StringIO()):
-        yield
-
-
-def _safe_addstr(win, y, x, text, attr=0):
-    h, w = win.getmaxyx()
-    if 0 <= y < h and 0 <= x < w:
-        try:
-            win.addstr(y, x, str(text)[: max(0, w - x - 1)], attr)
-        except curses.error:
-            pass
-
-
-# --- Theme: white background, black-on-white text, black highlight bar -------
-def _init_theme(stdscr):
-    if curses.has_colors():
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)  # normal
-        curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)  # selected
-        stdscr.bkgd(" ", curses.color_pair(1))
-
-
-def _attr_normal():
-    return curses.color_pair(1) if curses.has_colors() else curses.A_NORMAL
-
-
-def _attr_select():
-    return curses.color_pair(2) if curses.has_colors() else curses.A_REVERSE
-
-
-# --- Status line: the bottom row always shows the last action's feedback -----
-_STATUS = {"text": ""}
-
-
-def _status(msg):
-    _STATUS["text"] = str(msg)
-
-
-def _draw_status(stdscr):
-    h, _w = stdscr.getmaxyx()
-    try:
-        stdscr.move(h - 1, 0)
-        stdscr.clrtoeol()
-    except curses.error:
-        pass
-    if _STATUS["text"]:
-        _safe_addstr(stdscr, h - 1, 1, _STATUS["text"], _attr_normal() | curses.A_BOLD)
-
-
-def _flash_status(stdscr, msg):
-    """Set the status line and paint it now (for feedback before a blocking call)."""
-    _status(msg)
-    _draw_status(stdscr)
-    stdscr.refresh()
-
-
-# --- One menu "language" shared by every page --------------------------------
-# A page is built from a list of items. There are three kinds, so every screen
-# (main menu, servo list, per-servo page) reads and behaves the same way:
-#   _it_action(text, value) -- Enter returns `value` to the caller (navigation)
-#   _it_run(text, fn)       -- Enter runs fn() in place (edit a field, jog, ...)
-#   _it_toggle(text, fn)    -- left/right (or Enter) runs fn(delta), delta -1/+1
-def _it_action(text, value):
-    return {"kind": "action", "text": text, "value": value}
-
-
-def _it_run(text, on_enter):
-    return {"kind": "run", "text": text, "on_enter": on_enter}
-
-
-def _it_toggle(text, on_change):
-    return {"kind": "toggle", "text": text, "on_change": on_change}
-
-
-def _render_page(stdscr, title, subtitle, items, sel, footer):
-    stdscr.erase()
-    h, w = stdscr.getmaxyx()
-    _safe_addstr(stdscr, 0, 1, title, _attr_normal() | curses.A_BOLD)
-    top = 2
-    if subtitle:
-        _safe_addstr(stdscr, 1, 1, subtitle, _attr_normal() | curses.A_DIM)
-        top = 3
-    for i, item in enumerate(items):
-        y = top + i
-        if y >= h - 2:
-            break
-        attr = _attr_select() if i == sel else _attr_normal()
-        _safe_addstr(stdscr, y, 2, f"{item['text']:<{max(0, w - 4)}}", attr)
-    _safe_addstr(stdscr, h - 2, 1, footer, _attr_normal() | curses.A_DIM)
-    _draw_status(stdscr)
-    stdscr.refresh()
-
-
-def _tui_page(stdscr, title, build, subtitle=None,
-              footer="up/down move - Enter select - q back"):
-    """Render a page and drive it. `build()` returns a fresh item list each loop
-    so any values shown stay live. Returns the chosen action's value, or None on
-    q/ESC. title/subtitle may be strings or callables."""
-    sel = 0
-    while True:
-        items = build()
-        if not items:
-            return None
-        sel = max(0, min(sel, len(items) - 1))
-        _render_page(stdscr, title() if callable(title) else title,
-                     subtitle() if callable(subtitle) else subtitle, items, sel, footer)
-        c = stdscr.getch()
-        item = items[sel]
-        kind = item["kind"]
-        if c in (curses.KEY_UP, ord("k")):
-            sel = (sel - 1) % len(items)
-        elif c in (curses.KEY_DOWN, ord("j")):
-            sel = (sel + 1) % len(items)
-        elif c in (ord("q"), 27):
-            return None
-        elif c == curses.KEY_LEFT and kind == "toggle":
-            item["on_change"](-1)
-        elif c == curses.KEY_RIGHT and kind == "toggle":
-            item["on_change"](+1)
-        elif c in (curses.KEY_ENTER, 10, 13):
-            if kind == "action":
-                return item["value"]
-            if kind == "toggle":
-                item["on_change"](+1)
-            else:  # "run"
-                item["on_enter"]()
-
-
-def _tui_message(stdscr, lines, wait=True):
-    if isinstance(lines, str):
-        lines = [lines]
-    stdscr.erase()
-    for i, ln in enumerate(lines):
-        _safe_addstr(stdscr, 1 + i, 2, ln, _attr_normal())
-    h, _w = stdscr.getmaxyx()
-    if wait:
-        _safe_addstr(stdscr, h - 2, 1, "Press any key to continue ...",
-                     _attr_normal() | curses.A_DIM)
-    _draw_status(stdscr)
-    stdscr.refresh()
-    if wait:
-        stdscr.getch()
-
-
-def _tui_input(stdscr, prompt, default=""):
-    """Read a line at the bottom of the screen; empty reply keeps the default."""
-    h, w = stdscr.getmaxyx()
-    y = h - 2
-    msg = f"{prompt} [{default}]: " if str(default) != "" else f"{prompt}: "
-    try:
-        stdscr.move(y, 0)
-        stdscr.clrtoeol()
-    except curses.error:
-        pass
-    _safe_addstr(stdscr, y, 1, msg, _attr_normal())
-    stdscr.refresh()
-    curses.echo()
-    curses.curs_set(1)
-    try:
-        raw = stdscr.getstr(y, min(1 + len(msg), w - 2), 64)
-        s = raw.decode("utf-8", "ignore").strip() if raw is not None else ""
-    except Exception:
-        s = ""
-    finally:
-        curses.noecho()
-        curses.curs_set(0)
-    return s if s != "" else str(default)
-
-
-def _tui_input_int(stdscr, prompt, default):
-    while True:
-        s = _tui_input(stdscr, prompt, default)
-        try:
-            return int(str(s), 0)   # base 0 also accepts 0x.. / 0b..
-        except ValueError:
-            _tui_message(stdscr, [f"'{s}' is not an integer -- try again."])
+    # tui.tui_available() checks curses + a real terminal; allow forcing the
+    # plain text menu with SERVO_INIT_NOTUI=1.
+    return tui_available() and not os.environ.get("SERVO_INIT_NOTUI")
 
 
 def servo_config_tui(stdscr, config_dir, scan_max):
@@ -1244,29 +1068,38 @@ def servo_config_tui(stdscr, config_dir, scan_max):
         _status(f"saved channel map to {machine_path.name}")
 
 
+_PHASE_FMT = {PHASE_SINGLE_TURN: "108 (single-turn)", PHASE_MULTI_TURN: "124 (multi-turn)"}
+
+
 def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
-    """Per-servo page built from the shared item language. Editing id/name updates
-    the channel map (mark_dirty); the feedback row is a left/right toggle applied
-    to Register 18 on the spot. Every action reports on the status line."""
+    """Per-servo page built from the shared item language. Bus ID and the
+    Register-18 feedback mode are inline edit fields (Enter to edit, arrows/typing
+    to change, Enter to confirm); name is a prompt, jog is an action. Editing
+    id updates the channel map (mark_dirty). Every action reports on the status line."""
     state = {"cur": sid}
 
-    def change_id():
+    def set_id(new):
         cur = state["cur"]
-        new = _tui_input_int(stdscr, "new id (1-252)", cur)
-        if not 1 <= new <= 252:
-            _status("id out of range (1-252)")
-        elif new == cur:
+        if new == cur:
             _status("id unchanged")
+            return
+        with _quiet():
+            ok = bus.write_eeprom1(cur, ADDR_ID, new, lock_id=new) and bus.ping(new)
+        if ok:
+            _set_channel_id(channels, cur, new)
+            mark_dirty()
+            state["cur"] = new
+            _status(f"id {cur} -> {new}  (changed; saves on exit)")
         else:
-            with _quiet():
-                ok = bus.write_eeprom1(cur, ADDR_ID, new, lock_id=new) and bus.ping(new)
-            if ok:
-                _set_channel_id(channels, cur, new)
-                mark_dirty()
-                state["cur"] = new
-                _status(f"id {cur} -> {new}  (changed; saves on exit)")
-            else:
-                _status(f"id {cur} -> {new} FAILED (check wiring/power)")
+            _status(f"id {cur} -> {new} FAILED (check wiring/power)")
+
+    def set_phase(value):
+        cur = state["cur"]
+        with _quiet():
+            bus.write_eeprom1(cur, ADDR_PHASE, value)
+            chk = bus.read1(cur, ADDR_PHASE)
+        mode = {PHASE_MULTI_TURN: "multi-turn", PHASE_SINGLE_TURN: "single-turn"}.get(chk, "?")
+        _status(f"id {cur} Register 18 -> {chk} ({mode})" + ("" if chk == value else "  WRITE FAILED"))
 
     def change_name():
         cur = state["cur"]
@@ -1278,17 +1111,6 @@ def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
             _set_channel_name(channels, cur, new)
             mark_dirty()
             _status(f"id {cur} name -> '{new}'  (saves on exit)")
-
-    def toggle_phase(_delta):
-        cur = state["cur"]
-        with _quiet():
-            ph = bus.read1(cur, ADDR_PHASE)
-            target = PHASE_SINGLE_TURN if ph == PHASE_MULTI_TURN else PHASE_MULTI_TURN
-            bus.write_eeprom1(cur, ADDR_PHASE, target)
-            chk = bus.read1(cur, ADDR_PHASE)
-        mode = {PHASE_MULTI_TURN: "multi-turn", PHASE_SINGLE_TURN: "single-turn"}.get(chk, "?")
-        ok = chk == target
-        _status(f"id {cur} Register 18 -> {chk} ({mode})" + ("" if ok else "  WRITE FAILED"))
 
     def jog():
         cur = state["cur"]
@@ -1302,11 +1124,11 @@ def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
         name = _channel_name(channels, cur)
         with _quiet():
             ph = bus.read1(cur, ADDR_PHASE)
-        fb = "< multi-turn (124) >" if ph == PHASE_MULTI_TURN else "< single-turn (108) >"
         return [
-            _it_run(f"Bus ID    : {cur}", change_id),
+            _it_edit("Bus ID    : ", cur, set_id, step=1, lo=1, hi=252),
             _it_run(f"Name      : {name or '(unnamed)'}", change_name),
-            _it_toggle(f"Feedback  : {fb}", toggle_phase),
+            _it_edit("Feedback  : ", ph if ph in _PHASE_FMT else PHASE_SINGLE_TURN, set_phase,
+                     options=[PHASE_SINGLE_TURN, PHASE_MULTI_TURN], fmt=lambda v: _PHASE_FMT.get(v, str(v))),
             _it_run("Identify (jog this servo)", jog),
             _it_action("Back", "back"),
         ]
@@ -1316,8 +1138,7 @@ def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
         name = _channel_name(channels, cur)
         return f"Servo id {cur}" + (f"  ({name})" if name else "")
 
-    _tui_page(stdscr, title, build,
-              footer="up/down move - left/right change - Enter select - q back")
+    _tui_page(stdscr, title, build)
 
 
 def _with_suspend(stdscr, fn):
@@ -1356,22 +1177,41 @@ def _is_num(x):
     return not isinstance(x, bool) and isinstance(x, (int, float))
 
 
-def _edit_mapping_tui(stdscr, mapping, title):
-    """Edit a dict in place: scalars prompt, bools toggle, dicts/lists recurse."""
-    def edit_scalar(k):
+def _edit_mapping_tui(stdscr, mapping, title, mark_dirty):
+    """Edit a dict in place: scalars prompt, bools toggle, dicts/lists recurse.
+    Every actual change calls mark_dirty() so the caller can offer save/discard."""
+    def edit_scalar(k):  # strings / None: bottom-line prompt
         def f():
             old = mapping[k]
             raw = _tui_input(stdscr, str(k), "" if old is None else old)
             try:
-                mapping[k] = _coerce_like(old, raw)
+                new = _coerce_like(old, raw)
+                if new != old:
+                    mapping[k] = new
+                    mark_dirty()
                 _status(f"{k} = {mapping[k]}")
             except ValueError:
                 _status(f"{k}: '{raw}' is not a valid {type(old).__name__}")
         return f
 
+    def set_number(k):  # numbers: inline edit-mode (arrows / typing)
+        def f(v):
+            old = mapping[k]
+            try:
+                new = _coerce_like(old, str(v))   # keep hex/int/float ruamel styling
+            except ValueError:
+                _status(f"{k}: invalid value")
+                return
+            if new != old:
+                mapping[k] = new
+                mark_dirty()
+            _status(f"{k} = {mapping[k]}")
+        return f
+
     def toggle_bool(k):
         def f(_d):
             mapping[k] = not bool(mapping[k])
+            mark_dirty()
             _status(f"{k} = {mapping[k]}")
         return f
 
@@ -1381,6 +1221,7 @@ def _edit_mapping_tui(stdscr, mapping, title):
             raw = _tui_input(stdscr, f"{k} ({len(old)} numbers, space/comma sep)", _fmt_nums(old))
             try:
                 old[:] = _parse_nums(raw, isinstance(old[0], int))   # keep the list object + flow style
+                mark_dirty()
                 _status(f"{k} = [{_fmt_nums(old)}]")
             except (ValueError, IndexError):
                 _status(f"{k}: couldn't parse numbers")
@@ -1391,17 +1232,18 @@ def _edit_mapping_tui(stdscr, mapping, title):
             old = mapping[k]
             raw = _tui_input(stdscr, f"{k} (comma separated)", ", ".join(str(x) for x in old))
             old[:] = [s.strip() for s in raw.split(",") if s.strip()]
+            mark_dirty()
             _status(f"{k}: {len(old)} item(s)")
         return f
 
     def dive_map(k):
-        return lambda: _edit_mapping_tui(stdscr, mapping[k], f"{title} / {k}")
+        return lambda: _edit_mapping_tui(stdscr, mapping[k], f"{title} / {k}", mark_dirty)
 
     def dive_entries(k):
-        return lambda: _edit_seq_tui(stdscr, mapping[k], f"{title} / {k}")
+        return lambda: _edit_seq_tui(stdscr, mapping[k], f"{title} / {k}", mark_dirty)
 
     def dive_rows(k):
-        return lambda: _edit_rows_tui(stdscr, mapping[k], f"{title} / {k}")
+        return lambda: _edit_rows_tui(stdscr, mapping[k], f"{title} / {k}", mark_dirty)
 
     def build():
         items = []
@@ -1410,7 +1252,14 @@ def _edit_mapping_tui(stdscr, mapping, title):
             kl = f"{str(k):<16}"
             if isinstance(v, bool):
                 items.append(_it_toggle(f"{kl}: < {v} >", toggle_bool(k)))
-            elif isinstance(v, (int, float)) or isinstance(v, str) or v is None:
+            elif _is_num(v):
+                is_hex = _RUAMEL and HexInt is not None and isinstance(v, HexInt)
+                items.append(_it_edit(
+                    f"{kl}: ", v, set_number(k),
+                    step=1 if isinstance(v, int) else 1.0,
+                    cast=_to_int if isinstance(v, int) else float,
+                    fmt=hex if is_hex else None))
+            elif isinstance(v, str) or v is None:
                 items.append(_it_run(f"{kl}: {v}", edit_scalar(k)))
             elif isinstance(v, dict):
                 items.append(_it_run(f"{kl}: ... ({len(v)} keys)", dive_map(k)))
@@ -1434,21 +1283,22 @@ def _edit_mapping_tui(stdscr, mapping, title):
     _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
 
 
-def _edit_seq_tui(stdscr, seq, title):
+def _edit_seq_tui(stdscr, seq, title, mark_dirty):
     """Edit a list of mappings (e.g. servo.channels): pick an entry to edit."""
     def build():
         items = []
         for i, entry in enumerate(seq):
             summary = ", ".join(f"{kk}={vv}" for kk, vv in entry.items())
             items.append(_it_run(f"[{i}] {summary}",
-                                  (lambda j: lambda: _edit_mapping_tui(stdscr, seq[j], f"{title}[{j}]"))(i)))
+                                  (lambda j: lambda: _edit_mapping_tui(
+                                      stdscr, seq[j], f"{title}[{j}]", mark_dirty))(i)))
         items.append(_it_action("Back", None))
         return items
 
     _tui_page(stdscr, title, build, footer="up/down move - Enter edit - q back")
 
 
-def _edit_rows_tui(stdscr, seq, title):
+def _edit_rows_tui(stdscr, seq, title, mark_dirty):
     """Edit a list of numeric rows (e.g. coupling vectors)."""
     def edit_row(i):
         def f():
@@ -1456,6 +1306,7 @@ def _edit_rows_tui(stdscr, seq, title):
             raw = _tui_input(stdscr, f"row {i} ({len(row)} numbers)", _fmt_nums(row))
             try:
                 row[:] = _parse_nums(raw, all(isinstance(x, int) for x in row))
+                mark_dirty()
                 _status(f"row {i} = [{_fmt_nums(row)}]")
             except ValueError:
                 _status(f"row {i}: couldn't parse numbers")
@@ -1470,24 +1321,27 @@ def _edit_rows_tui(stdscr, seq, title):
 
 
 def _prepare_config_tui(stdscr, name, config_dir):
-    """Load name.yaml for editing in curses (creating it from the template)."""
+    """Load name.yaml for editing in curses (creating it from the template).
+    Returns (cfg, target, overwrote) -- overwrote is True when the user chose to
+    start from the template, so the caller treats the buffer as already-changed."""
     template = config_dir / f"{name}.template.yaml"
     target = config_dir / f"{name}.yaml"
     if not template.exists():
         _tui_message(stdscr, [f"template {template.name} not found; cannot create {target.name}."])
-        return None, target
-    src = template
+        return None, target, False
+    src, overwrote = template, False
     if target.exists():
         choice = _tui_page(stdscr, f"{target.name} already exists", lambda: [
             _it_action("Edit the existing file", "edit"),
             _it_action("Overwrite from the template", "overwrite"),
-            _it_action("Back", None),
+            _it_action("Leave it unchanged (cancel)", None),
         ], footer="up/down move - Enter select - q cancel")
         if choice is None:
-            return None, target
+            return None, target, False
         src = template if choice == "overwrite" else target
+        overwrote = choice == "overwrite"
     with _quiet():
-        return _load_text(src.read_text()), target
+        return _load_text(src.read_text()), target, overwrote
 
 
 def _edit_config_tui(stdscr, name, config_dir, title):
@@ -1495,13 +1349,25 @@ def _edit_config_tui(stdscr, name, config_dir, title):
         _tui_message(stdscr, ["ruyaml is required to edit the config files.",
                               "Use 'Python dependencies' to install it first."])
         return
-    cfg, target = _prepare_config_tui(stdscr, name, config_dir)
+    cfg, target, overwrote = _prepare_config_tui(stdscr, name, config_dir)
     if cfg is None:
         return
-    _edit_mapping_tui(stdscr, cfg, title)
-    with _quiet():
-        write_config(cfg, target)
-    _status(f"saved {target.name}")
+    dirty = [overwrote]
+    _edit_mapping_tui(stdscr, cfg, title, lambda: dirty.__setitem__(0, True))
+    if not dirty[0]:
+        _status(f"{target.name}: no changes made")
+        return
+    # Offer an explicit way to leave without changing the file on disk.
+    choice = _tui_page(stdscr, f"Save changes to {target.name}?", lambda: [
+        _it_action("Save changes", "save"),
+        _it_action("Discard changes (leave the file unchanged)", "discard"),
+    ], footer="up/down move - Enter select")
+    if choice == "save":
+        with _quiet():
+            write_config(cfg, target)
+        _status(f"saved {target.name}")
+    else:
+        _status(f"{target.name}: changes discarded -- file left unchanged")
 
 
 def deps_tui(stdscr):

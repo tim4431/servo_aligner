@@ -20,6 +20,10 @@ from config import (
 )
 from datetime import datetime
 from servo_util import ENCODER_CENTER, COUNTS_PER_TURN, DEGREES_PER_TURN
+from tui import (
+    curses, tui_available, _init_theme, _safe_addstr, _attr_normal, _attr_select,
+    _status, _draw_status, _NumberEditor, _quiet,
+)
 
 # Control table address
 ADDR_STS_TORQUE_ENABLE = 40
@@ -589,11 +593,174 @@ class Servoset:
         self.portHandler.closePort()
 
 
+def _servo_name(servos, i):
+    return sts3032_dict[servos.servo_channel_list[i]][1]
+
+
+def servo_monitor_tui(servos):
+    """Live curses table of every servo's position / angle / load / torque.
+
+    The table refreshes on a timer (~0.6 s) so the values stay live. Two-axis
+    selection: up/down (or a digit) pick the servo row, left/right pick which
+    field in that row to change (angle or torque -- the active field is
+    underlined). Enter edits the selected field: angle -> type / nudge a number,
+    torque -> cycle off/on; Enter confirms (and moves, for angle), Esc cancels.
+    't' is a quick torque toggle, 'z' zeroes at the current shaft position,
+    'q' quits. Reuses the shared `tui` toolkit.
+    """
+    n = len(servos.servo_list)
+    torque = [True] * n   # Servoset.refresh() enabled torque on every servo
+    data = {"pos": [0] * n, "ang": [0.0] * n, "load": [0] * n}
+    COLS = ["angle", "torque"]   # the editable fields a row's cursor moves between
+
+    def refresh():
+        try:
+            with _quiet():
+                pos = servos.get_position()
+                data["pos"] = list(pos)
+                data["ang"] = list(servos.position_to_angle(pos))
+                data["load"] = list(servos.multi_load_list)
+        except Exception as e:
+            _status(f"read error: {e}")
+
+    def field_text(i, field, editing):
+        if editing is not None:
+            return f"[ {editing} ]"
+        if field == "angle":
+            return f"{float(data['ang'][i]):.2f}"
+        return "on" if torque[i] else "off"
+
+    def draw(stdscr, sel, col, edit_text=None):
+        stdscr.erase()
+        h, _w = stdscr.getmaxyx()
+        _safe_addstr(stdscr, 0, 1, "Servo monitor", _attr_normal() | curses.A_BOLD)
+        _safe_addstr(stdscr, 1, 1, f"board {servos.board_id}    {n} servo(s)",
+                     _attr_normal() | curses.A_DIM)
+        header = (f"{'idx':>3}  {'name':<8} {'id':>3}  {'position':>9}  "
+                  f"{'angle(deg)':>13}  {'load':>6}  {'torque':>9}")
+        _safe_addstr(stdscr, 3, 3, header, _attr_normal() | curses.A_BOLD)
+        for i in range(n):
+            # ">" marks the selected servo row
+            _safe_addstr(stdscr, 4 + i, 1, ">" if i == sel else " ", _attr_normal() | curses.A_BOLD)
+            ang = field_text(i, "angle", edit_text if (i == sel and COLS[col] == "angle") else None)
+            tq = field_text(i, "torque", edit_text if (i == sel and COLS[col] == "torque") else None)
+            segs = [
+                (f"{i:>3}  {_servo_name(servos, i):<8} {servos.servo_list[i].SCS_ID:>3}  "
+                 f"{int(data['pos'][i]):>9}  ", None),
+                (f"{ang:>13}", "angle"),
+                (f"  {int(data['load'][i]):>6}  ", None),
+                (f"{tq:>9}", "torque"),
+            ]
+            x = 3
+            for text, field in segs:
+                active = i == sel and field is not None and field == COLS[col]
+                _safe_addstr(stdscr, 4 + i, x, text, _attr_select() if active else _attr_normal())
+                x += len(text)
+        foot = ("left/right or type to change - Enter confirm - Esc cancel" if edit_text is not None
+                else "up/down servo - left/right field - Enter edit - z zero - q quit")
+        _safe_addstr(stdscr, h - 2, 1, foot, _attr_normal() | curses.A_DIM)
+        _draw_status(stdscr)
+        stdscr.refresh()
+
+    def set_torque(i, on):
+        try:
+            with _quiet():
+                (servos.servo_list[i].torque_enable if on else servos.servo_list[i].torque_disable)()
+            torque[i] = on
+            _status(f"servo {i}: torque {'on' if on else 'off'}")
+        except Exception as e:
+            _status(f"servo {i}: torque change failed ({e})")
+
+    def move_to(i, deg):
+        _status(f"moving servo {i} to {deg} deg ...")
+        try:
+            with _quiet():
+                servos.set_single(i, deg)
+            _status(f"servo {i} -> {deg} deg")
+        except Exception as e:
+            _status(f"servo {i}: move failed ({e})")
+
+    def edit_field(stdscr, sel, col):
+        field = COLS[col]
+        if field == "angle":
+            ed = _NumberEditor(round(float(data["ang"][sel]), 2), step=1.0, cast=float,
+                               fmt=lambda v: f"{v:.2f}")
+        else:  # torque: cycle off/on
+            ed = _NumberEditor(bool(torque[sel]), options=[False, True],
+                               fmt=lambda v: "on" if v else "off")
+        stdscr.timeout(-1)   # block (no refresh ticks) while editing one field
+        try:
+            while True:
+                draw(stdscr, sel, col, edit_text=ed.display())
+                res = ed.handle(stdscr.getch())
+                if res == "cancel":
+                    _status("edit cancelled")
+                    return
+                if res == "commit":
+                    if field == "angle":
+                        draw(stdscr, sel, col)
+                        move_to(sel, ed.value)
+                    else:
+                        set_torque(sel, bool(ed.value))
+                    return
+        finally:
+            stdscr.timeout(600)
+
+    def app(stdscr):
+        curses.curs_set(0)
+        _init_theme(stdscr)
+        stdscr.timeout(600)   # getch returns -1 after 0.6 s so the table refreshes
+        sel, col = 0, 0
+        while True:
+            refresh()
+            draw(stdscr, sel, col)
+            c = stdscr.getch()
+            if c == -1:
+                continue   # timer tick: just refresh the table
+            if c in (curses.KEY_UP, ord("k")):
+                sel = (sel - 1) % n
+            elif c in (curses.KEY_DOWN, ord("j")):
+                sel = (sel + 1) % n
+            elif c == curses.KEY_LEFT:
+                col = max(0, col - 1)            # clamp -- don't wrap to the rightmost
+            elif c == curses.KEY_RIGHT:
+                col = min(len(COLS) - 1, col + 1)  # clamp -- don't wrap to the leftmost
+            elif ord("0") <= c <= ord("9") and (c - ord("0")) < n:
+                sel = c - ord("0")
+            elif c in (ord("q"), 27):
+                break
+            elif c in (curses.KEY_ENTER, 10, 13):
+                edit_field(stdscr, sel, col)
+            elif c in (ord("t"), ord("T")):   # quick torque toggle shortcut
+                set_torque(sel, not torque[sel])
+            elif c in (ord("z"), ord("Z")):
+                try:
+                    with _quiet():
+                        servos.servo_list[sel].set_zero()
+                    _status(f"servo {sel}: zero set at current position")
+                except Exception as e:
+                    _status(f"servo {sel}: set-zero failed ({e})")
+
+    # Silence library logging while the curses screen is up (it writes to stderr).
+    prev = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        curses.wrapper(app)
+    finally:
+        logging.disable(prev)
+
+
 if __name__ == "__main__":
     servos = Servoset(SERVER["board_id"], SERVO_CHANNEL_LIST)
-    servos.random_play()
-    # servos.set_angle([50,-50])
-    # servos.set_angle([30])
-    # servos.set_angle([0])
-    # servos.home()
-    # print(servos.get_angle())
+    try:
+        if tui_available():
+            servo_monitor_tui(servos)
+        else:
+            # Non-interactive (piped / no terminal): print a one-shot snapshot.
+            pos = servos.get_position()
+            ang = servos.position_to_angle(pos)
+            for i, servo in enumerate(servos.servo_list):
+                print(f"[{i}] {_servo_name(servos, i):<8} id={servo.SCS_ID:>3}  "
+                      f"pos={int(pos[i]):>6}  angle={float(ang[i]):>8.2f} deg  load={int(servos.multi_load_list[i])}")
+    finally:
+        servos.close()
