@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import threading
 from scservo_sdk import *  # Uses FEETECH SCServo SDK library (sms_sts model)
 import logging
 import json
@@ -38,8 +39,11 @@ MOVING_SPEED_THRESHOLD = 50  # present-speed units (~0 = stopped); tune on hardw
 
 class sts3032:
 
-    def __init__(self, channel, packetHandler):
+    def __init__(self, channel, packetHandler, lock=None):
         self.packetHandler = packetHandler
+        # Serialises bus access so the ZMQ-server thread and the console can share
+        # one serial port without their transactions interleaving (see Servoset).
+        self.lock = lock or threading.RLock()
         self.SCS_ID = sts3032_dict[channel][0]
         self.SCS_MOVING_SPEED = 1500  # SCServo moving speed
         self.SCS_MOVING_ACC = 50  # SCServo moving acc
@@ -59,7 +63,8 @@ class sts3032:
             2: self.packetHandler.write2ByteTxRx,
             4: self.packetHandler.write4ByteTxRx,
         }[length]
-        scs_comm_result, scs_error = writer(self.SCS_ID, address, value)
+        with self.lock:
+            scs_comm_result, scs_error = writer(self.SCS_ID, address, value)
         if scs_comm_result != COMM_SUCCESS:
             logging.info(self.message + self.packetHandler.getTxRxResult(scs_comm_result))
         elif scs_error != 0:
@@ -69,30 +74,32 @@ class sts3032:
     def set_zero(self):
         # Writing 128 to the torque-enable register tells the servo to treat its
         # current shaft position as the new zero (FEETECH "set middle" command).
-        self.set_register(ADDR_STS_TORQUE_ENABLE, 128)
-        try:
-            scs_present_position_speed, scs_comm_result, scs_error = (
-                self.packetHandler.read4ByteTxRx(
-                    self.SCS_ID, ADDR_STS_PRESENT_POSITION
+        # Hold the bus lock across the write + read-back so it stays one transaction.
+        with self.lock:
+            self.set_register(ADDR_STS_TORQUE_ENABLE, 128)
+            try:
+                scs_present_position_speed, scs_comm_result, scs_error = (
+                    self.packetHandler.read4ByteTxRx(
+                        self.SCS_ID, ADDR_STS_PRESENT_POSITION
+                    )
                 )
-            )
-            if scs_comm_result != COMM_SUCCESS:
-                logging.info(
-                    self.message
-                    + "result "
-                    + str(self.packetHandler.getTxRxResult(scs_comm_result))
-                )
-            elif scs_error != 0:
-                logging.error(
-                    self.message
-                    + "error "
-                    + str(self.packetHandler.getRxPacketError(scs_error))
-                )
-            logging.info(self.message + "SCServo zero set!")
-            return 0
-        except:
-            logging.error(self.message + "Read not sucessful!")
-            return 1
+                if scs_comm_result != COMM_SUCCESS:
+                    logging.info(
+                        self.message
+                        + "result "
+                        + str(self.packetHandler.getTxRxResult(scs_comm_result))
+                    )
+                elif scs_error != 0:
+                    logging.error(
+                        self.message
+                        + "error "
+                        + str(self.packetHandler.getRxPacketError(scs_error))
+                    )
+                logging.info(self.message + "SCServo zero set!")
+                return 0
+            except:
+                logging.error(self.message + "Read not sucessful!")
+                return 1
 
     def set_acc(self, set_acc):
         self.SCS_MOVING_ACC = set_acc
@@ -124,6 +131,13 @@ class Servoset:
         #   "moving_register" : servo Moving flag (register 66) == 0 for all servos
         #                       (authoritative, but an extra sync-read per poll)
         self.completion_mode = "position_speed"
+        # One re-entrant lock guards every bus transaction (the per-servo register
+        # writes and the group sync read/writes), so the ZMQ-server thread and the
+        # interactive console can use this shared Servoset at the same time without
+        # their packets interleaving on the wire. Each transaction is atomic; the
+        # lock is NOT held across a whole multi-second move, so a live monitor read
+        # still gets a turn between the move loop's reads.
+        self.lock = threading.RLock()
 
         self.refresh()
 
@@ -132,7 +146,7 @@ class Servoset:
         self.servo_list = []
 
         for channel in self.servo_channel_list:
-            servo = sts3032(channel, self.packetHandler)
+            servo = sts3032(channel, self.packetHandler, self.lock)
             servo.set_acc(SERVO_ACC)
             servo.set_speed(SERVO_SPEED)
             servo.torque_enable()
@@ -325,10 +339,11 @@ class Servoset:
 
     def group_sync_read(self, groupSyncRead, start_address, data_length):
         # Pre-read (one bus transaction), then extract a single field per servo.
-        scs_comm_result = groupSyncRead.txRxPacket()
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        return self._sync_extract(groupSyncRead, start_address, data_length)
+        with self.lock:
+            scs_comm_result = groupSyncRead.txRxPacket()
+            if scs_comm_result != COMM_SUCCESS:
+                logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
+            return self._sync_extract(groupSyncRead, start_address, data_length)
 
     def _sync_extract(self, groupSyncRead, start_address, data_length):
         # Extract one (start_address, data_length) field per servo from data
@@ -352,22 +367,23 @@ class Servoset:
     def group_sync_write_2byte(self, groupSyncWrite, datas):
         # Allocate goal position value into byte array
         # Add SCServo goal position values to the Syncwrite parameter storage
-        index = 0
-        for SCS_ID in self.SCS_ID_list:
-            param_goal_position = [
-                self.packetHandler.scs_lobyte(datas[index]),
-                self.packetHandler.scs_hibyte(datas[index]),
-            ]
-            scs_addparam_result = groupSyncWrite.addParam(SCS_ID, param_goal_position)
-            index += 1
-            if scs_addparam_result != True:
-                logging.error("[ID:%03d] groupSyncWrite addparam failed" % SCS_ID)
-                quit()
+        with self.lock:
+            index = 0
+            for SCS_ID in self.SCS_ID_list:
+                param_goal_position = [
+                    self.packetHandler.scs_lobyte(datas[index]),
+                    self.packetHandler.scs_hibyte(datas[index]),
+                ]
+                scs_addparam_result = groupSyncWrite.addParam(SCS_ID, param_goal_position)
+                index += 1
+                if scs_addparam_result != True:
+                    logging.error("[ID:%03d] groupSyncWrite addparam failed" % SCS_ID)
+                    quit()
 
-        # Syncwrite goal position
-        scs_comm_result = groupSyncWrite.txPacket()
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
+            # Syncwrite goal position
+            scs_comm_result = groupSyncWrite.txPacket()
+            if scs_comm_result != COMM_SUCCESS:
+                logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
 
     def get_position(self):
         # One 6-byte sync-read yields present position (56-57), present speed
@@ -375,34 +391,35 @@ class Servoset:
         # bus transaction; the position+speed word and the load word are then
         # extracted from the same fetched buffer (getData only decodes 1/2/4-byte
         # fields, so they cannot come out as one 6-byte value).
-        scs_comm_result = self.groupSyncRead_position.txRxPacket()
-        if scs_comm_result != COMM_SUCCESS:
-            logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
-        ph = self.packetHandler
-        # Position (low word, 56-57) + speed (high word, 58-59): both FEETECH
-        # bit-15 sign-magnitude, decoded with scs_tohost(..., 15) into signed
-        # values -- the inverse of the goal-position encoding in _set_position.
-        # (Without the decode, a negative multi-turn position with bit 15 set
-        # would read as ~32768+ and corrupt the angle. cf. sync_read_write.py.)
-        pos_speed_list = self._sync_extract(
-            self.groupSyncRead_position, ADDR_STS_PRESENT_POSITION, 4
-        )
-        scs_present_position_list = [
-            ph.scs_tohost(ph.scs_loword(d), 15) for d in pos_speed_list
-        ]
-        self.multi_speed_list = [
-            ph.scs_tohost(ph.scs_hiword(d), 15) for d in pos_speed_list
-        ]
-        # Present load (60-61): output-torque proxy, ~0.1% of max torque. Unlike
-        # position/speed it is bit-10 sign-magnitude (bit 10 = direction), so it
-        # decodes with scs_tohost(..., 10).
-        load_list = self._sync_extract(
-            self.groupSyncRead_position, ADDR_STS_PRESENT_LOAD, 2
-        )
-        self.multi_load_list = [ph.scs_tohost(d, 10) for d in load_list]
-        self.multi_position_list = list(scs_present_position_list)
-        self.save()
-        return scs_present_position_list
+        with self.lock:
+            scs_comm_result = self.groupSyncRead_position.txRxPacket()
+            if scs_comm_result != COMM_SUCCESS:
+                logging.info("%s" % self.packetHandler.getTxRxResult(scs_comm_result))
+            ph = self.packetHandler
+            # Position (low word, 56-57) + speed (high word, 58-59): both FEETECH
+            # bit-15 sign-magnitude, decoded with scs_tohost(..., 15) into signed
+            # values -- the inverse of the goal-position encoding in _set_position.
+            # (Without the decode, a negative multi-turn position with bit 15 set
+            # would read as ~32768+ and corrupt the angle. cf. sync_read_write.py.)
+            pos_speed_list = self._sync_extract(
+                self.groupSyncRead_position, ADDR_STS_PRESENT_POSITION, 4
+            )
+            scs_present_position_list = [
+                ph.scs_tohost(ph.scs_loword(d), 15) for d in pos_speed_list
+            ]
+            self.multi_speed_list = [
+                ph.scs_tohost(ph.scs_hiword(d), 15) for d in pos_speed_list
+            ]
+            # Present load (60-61): output-torque proxy, ~0.1% of max torque. Unlike
+            # position/speed it is bit-10 sign-magnitude (bit 10 = direction), so it
+            # decodes with scs_tohost(..., 10).
+            load_list = self._sync_extract(
+                self.groupSyncRead_position, ADDR_STS_PRESENT_LOAD, 2
+            )
+            self.multi_load_list = [ph.scs_tohost(d, 10) for d in load_list]
+            self.multi_position_list = list(scs_present_position_list)
+            self.save()
+            return scs_present_position_list
 
     def get_angle(self):
         position_list = self.get_position()

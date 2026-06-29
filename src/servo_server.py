@@ -22,7 +22,9 @@ In production (installed under expctl): ``python -m expctl.servers.servoaligner.
 """
 
 import argparse
+import collections
 import logging
+import sys
 import threading
 
 from config import SERVER, SERVO_CHANNEL_LIST, sts3032_dict
@@ -32,6 +34,34 @@ from tui import (
     _status, _draw_status, _flash_status, _NumberEditor, _quiet,
     _it_action, _it_run, _tui_page, _tui_confirm,
 )
+
+# Ring buffer of the ZMQ server's log/print lines, shown on the ZMQ page. While
+# the control panel is up, stdout/stderr and logging are redirected here so the
+# server's output never lands on the curses screen.
+_LOG_BUF = collections.deque(maxlen=1000)
+
+
+class _BufStream:
+    """File-like sink that splits writes into lines and appends them to a deque."""
+
+    def __init__(self, buf):
+        self.buf = buf
+        self._partial = ""
+
+    def write(self, s):
+        self._partial += s
+        while "\n" in self._partial:
+            line, self._partial = self._partial.split("\n", 1)
+            line = line.rstrip()
+            if line:
+                self.buf.append(line)
+        return len(s)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
 
 
 def _servo_name(servos, i):
@@ -229,6 +259,12 @@ class ZmqController:
         if self.running():
             return
         from zmq_server import STSServer   # lazy: needs the expctl framework
+        # ServerClass installs a coloredlogs handler on its own logger at import;
+        # drop it and let records propagate to root (which the panel captures into
+        # _LOG_BUF), so server logs reach the log page, not the screen.
+        sc_logger = logging.getLogger("ServerClass")
+        sc_logger.handlers = []
+        sc_logger.propagate = True
         server = STSServer(SERVER["name"], SERVER["port"], "", self.servos, SERVO_CHANNEL_LIST)
         self.stop_event = threading.Event()
         ev = self.stop_event
@@ -246,33 +282,82 @@ class ZmqController:
         self.stop_event = None
 
 
-def control_panel(servos):
-    """Interactive panel: monitor, manual controls, and the ZMQ server switch.
+def zmq_page(stdscr, zmq):
+    """The ZMQ server's own page: start/stop it and watch its log at the bottom.
 
-    The manual controls and the monitor share the console's serial connection
-    with the ZMQ server, so while the server is running they're hidden (only the
-    "stop server" and "quit" options remain) to keep serial access single-owner.
+    The server runs in a background thread, so leaving this page (Back / q) keeps
+    it running -- come back any time and it's still here, with its log. Refreshes
+    on a timer so the log stays live.
     """
+    stdscr.timeout(500)
+    sel = 0
+    try:
+        while True:
+            on = zmq.running()
+            actions = ["Stop server" if on else "Start server", "Back (leave server running)"]
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            _safe_addstr(stdscr, 0, 1, "ZMQ server", _attr_normal() | curses.A_BOLD)
+            status = f"RUNNING on port {SERVER['port']}" if on else "stopped"
+            _safe_addstr(stdscr, 1, 1, f"status: {status}", _attr_normal() | curses.A_DIM)
+            for i, a in enumerate(actions):
+                _safe_addstr(stdscr, 3 + i, 1, ">" if i == sel else " ", _attr_normal() | curses.A_BOLD)
+                _safe_addstr(stdscr, 3 + i, 3, a, _attr_select() if i == sel else _attr_normal())
+            _safe_addstr(stdscr, 6, 1, "--- server log ---", _attr_normal() | curses.A_BOLD)
+            top = 7
+            avail = max(0, (h - 2) - top)
+            for j, line in enumerate(list(_LOG_BUF)[-avail:] if avail else []):
+                _safe_addstr(stdscr, top + j, 1, line, _attr_normal())
+            _safe_addstr(stdscr, h - 2, 1, "up/down - Enter select - q back (server keeps running)",
+                         _attr_normal() | curses.A_DIM)
+            _draw_status(stdscr)
+            stdscr.refresh()
+            c = stdscr.getch()
+            if c == -1:
+                continue   # timer tick: refresh the log
+            if c in (curses.KEY_UP, ord("k")):
+                sel = (sel - 1) % len(actions)
+            elif c in (curses.KEY_DOWN, ord("j")):
+                sel = (sel + 1) % len(actions)
+            elif c in (ord("q"), 27):
+                break
+            elif c in (curses.KEY_ENTER, 10, 13):
+                if sel == 1:
+                    break
+                if on:
+                    _flash_status(stdscr, "stopping ZMQ server ...")
+                    zmq.stop()
+                    _status("ZMQ server stopped")
+                else:
+                    try:
+                        zmq.start()
+                        _status(f"ZMQ server listening on port {SERVER['port']}")
+                    except Exception as e:
+                        _status(f"ZMQ server failed to start: {e}")
+    finally:
+        stdscr.timeout(-1)
+
+
+def control_panel(servos):
+    """Interactive control panel: the ZMQ server page (run it in the background +
+    watch its log), the live servo monitor, and the manual controls. The server
+    and the console share one ``Servoset``, whose bus lock serialises access, so
+    the monitor / manual controls work even while the server is running."""
     zmq = ZmqController(servos)
 
     def panel(stdscr):
         curses.curs_set(0)
         _init_theme(stdscr)
 
-        # Actions run in place (via _it_run) so the cursor keeps its position
-        # across selections -- only "Quit" / q exits the page.
-        def toggle_zmq():
-            if zmq.running():
-                _flash_status(stdscr, "stopping ZMQ server ...")
-                zmq.stop()
-                _status("ZMQ server stopped")
-            else:
-                try:
-                    zmq.start()
-                    _status(f"ZMQ server listening on port {SERVER['port']}")
-                except Exception as e:
-                    _status(f"ZMQ server failed to start: {e}")
+        # Actions run in place (via _it_run) so the cursor keeps its position;
+        # only "Quit" / q exits the page.
+        def open_zmq():
+            zmq_page(stdscr, zmq)
+            _init_theme(stdscr)
 
+        # The manual controls and the monitor work even while the server is
+        # running -- Servoset serialises bus access with a lock, so the console
+        # and the server thread share the one serial port safely.
         def run_monitor():
             servo_monitor_tui(servos, stdscr)
             _init_theme(stdscr)
@@ -303,20 +388,15 @@ def control_panel(servos):
             _status(f"de-hysteresis turned {'on' if servos.de_hysterisis else 'off'}")
 
         def build():
-            on = zmq.running()
-            state = f"RUNNING (port {SERVER['port']})" if on else "stopped"
-            items = [_it_run(f"ZMQ server: {state}   [Enter to {'stop' if on else 'start'}]", toggle_zmq)]
-            if on:
-                items.append(_it_run("(stop the server to use the manual controls)", lambda: None))
-            else:
-                items += [
-                    _it_run("Servo monitor  (live table)", run_monitor),
-                    _it_run("Home all servos (0 deg)", do_home),
-                    _it_run("Set current pose as zero (all servos)", do_zero),
-                    _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
-                ]
-            items.append(_it_action("Quit", "quit"))
-            return items
+            state = f"RUNNING (port {SERVER['port']})" if zmq.running() else "stopped"
+            return [
+                _it_run(f"ZMQ server: {state}   [open]", open_zmq),
+                _it_run("Servo monitor  (live table)", run_monitor),
+                _it_run("Home all servos (0 deg)", do_home),
+                _it_run("Set current pose as zero (all servos)", do_zero),
+                _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
+                _it_action("Quit", "quit"),
+            ]
 
         _tui_page(
             stdscr, "Servo server", build,
@@ -324,12 +404,26 @@ def control_panel(servos):
             footer="up/down move - Enter select - q quit")
         zmq.stop()   # don't leave the server thread running after the panel exits
 
-    prev = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
+    # Capture the server's logs/prints into _LOG_BUF (shown on the ZMQ page) and
+    # keep them off the curses screen: redirect stdout/stderr to the buffer and
+    # route root logging there. Handlers created later (the lazy zmq_server
+    # import) bind to the redirected stderr, so they're captured too.
+    old_out, old_err = sys.stdout, sys.stderr
+    root = logging.getLogger()
+    saved_handlers, saved_level, saved_disable = root.handlers[:], root.level, root.manager.disable
+    sink = _BufStream(_LOG_BUF)
+    handler = logging.StreamHandler(sink)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    sys.stdout = sys.stderr = sink
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+    logging.disable(logging.NOTSET)
     try:
         curses.wrapper(panel)
     finally:
-        logging.disable(prev)
+        sys.stdout, sys.stderr = old_out, old_err
+        root.handlers, root.level = saved_handlers, saved_level
+        logging.disable(saved_disable)
 
 
 # --- One-off command-line controls (the old ZMQ-server CLI, merged here) ------
