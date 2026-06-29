@@ -289,6 +289,24 @@ def _tui_page(stdscr, title, build, subtitle=None,
         stdscr.timeout(-1)   # restore blocking getch for other curses readers
 
 
+def _tui_confirm(stdscr, question, double=False):
+    """Yes/No dialog for a destructive action. Defaults to **No** (the cursor
+    starts on "No", and q/Esc also mean No), so an accidental Enter is safe. With
+    ``double=True`` the user must confirm a second time. Returns True only on full
+    confirmation. Reusable by any curses tool."""
+    def ask(q):
+        return _tui_page(stdscr, q, lambda: [
+            _it_action("No  (cancel)", False),
+            _it_action("Yes", True),
+        ], footer="up/down move - Enter select - q = No") is True
+
+    if not ask(question):
+        return False
+    if double:
+        return ask("Are you sure? This re-defines the servo zero and cannot be undone.")
+    return True
+
+
 def _tui_message(stdscr, lines, wait=True):
     if isinstance(lines, str):
         lines = [lines]

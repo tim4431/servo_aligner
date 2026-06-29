@@ -83,36 +83,40 @@ The same `src/` tree runs in two contexts, which **changes how you launch it**:
 
 ### Start the ZMQ server
 
-[`STSServer.py`](../src/STSServer.py) listens on a ZMQ REP socket (**port 60627**), receives pickled
-`Sequence` objects from the `expctl` framework, and moves the servos to the
-requested angles during the `QUEUE` phase.
+[`zmq_server.py`](../src/zmq_server.py) (class `STSServer`) listens on a ZMQ REP socket (**port
+60627**), receives pickled `Sequence` objects from the `expctl` framework, and
+moves the servos to the requested angles during the `QUEUE` phase. Its `Servoset`
+is injected and its `main_loop(cond_fn)` polls every 10 ms, so the interactive
+console can run it in a background thread and stop it on demand.
 
 ```bash
 # standalone, from src/
-python STSServer.py
+python zmq_server.py
 
 # installed
-python -m expctl.servers.servoaligner.STSServer
+python -m expctl.servers.servoaligner.zmq_server
+
+# or turn it on/off from the interactive console
+python servo_server.py        # control panel -> "ZMQ server: [start/stop]"
 ```
 
-On startup it constructs a `Servoset` for channels `[0..7]`, enables torque, and
-turns **de-hysteresis on** before entering the message loop.
+### Manual servo controls (the console + one-shot CLI)
 
-### Server CLI subcommands
-
-[`STSServer.py`](../src/STSServer.py) also parses an argparse CLI **once at startup**, before the
-message loop — handy for manual setup without the experiment framework:
+[`servo_server.py`](../src/servo_server.py) is the interactive console — a curses control panel with
+the live servo monitor, the manual controls, and the ZMQ-server switch. The same
+manual controls are also available as one-shot commands (these moved here from
+the old server CLI), handy for setup scripts without the experiment framework:
 
 ```bash
-python STSServer.py set_zero              # set current pose as the zero/center
-python STSServer.py home                  # move all servos to 0° (position 2048)
-python STSServer.py set_angle 10 -5 0 ... # absolute angles (deg) for all channels
-python STSServer.py set_single 3 12.5     # move one channel (index 3) to 12.5°
-python STSServer.py dehys 0|1             # de-hysteresis off (0) / on (1)
+python servo_server.py set_zero              # set current pose as the zero/center
+python servo_server.py home                  # move all servos to 0° (position 2048)
+python servo_server.py set_angle 10 -5 0 ... # absolute angles (deg) for all channels
+python servo_server.py set_single 3 12.5     # move one channel (index 3) to 12.5°
+python servo_server.py dehys 0|1             # de-hysteresis off (0) / on (1)
 ```
 
-(Replace `python STSServer.py` with the `python -m expctl.…STSServer` form when
-installed.)
+(Replace `python servo_server.py` with the `python -m expctl.…servo_server` form
+when installed.)
 
 ## 4. Standalone alignment / calibration scripts
 

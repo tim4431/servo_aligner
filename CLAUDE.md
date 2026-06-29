@@ -10,12 +10,13 @@ The physics background, alignment procedure, de-hysteresis rationale, Jacobian/o
 
 ## Hardware dependency
 
-Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `callback_functions.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `callback_functions.py` opens the I2C ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `config.py`, `servo_util.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py`, `tui.py` (the first two need PyYAML and the `machine.yaml`/`calibration.yaml` files present, since `config.py` reads them at import). `tui.py` is a self-contained curses TUI toolkit (item language, theme, status line, input helpers) shared by `init_helper.py` and `servodriver.py`'s monitor; it has no project or hardware imports. Running `servodriver.py` directly launches a live curses monitor of all servos (position/angle/load/torque) where you can select a servo to set its angle, toggle torque, or zero it.
+Most of `src/` cannot run on a dev machine: it imports `smbus2`, `MCP342x`, and opens a serial port to real servos. Modules like `callback_functions.py`, `servodriver.py`, `clip_scan.py`, `calibrate_jacobian.py` execute hardware I/O **at import time** (e.g. `callback_functions.py` opens the I2C ADC; `calibrate_jacobian.py` constructs a `Servoset` and enables torque). Don't import these to "check" them — they will fail or move motors. Pure, safe-to-import modules: `config.py`, `servo_util.py`, `spiral.py`, `fit_gaussian.py`, `numeric_sim.py`, `tui.py` (the first two need PyYAML and the `machine.yaml`/`calibration.yaml` files present, since `config.py` reads them at import). `tui.py` is a self-contained curses TUI toolkit (item language, theme, status line, input helpers) shared by `init_helper.py` and `servo_server.py`; it has no project or hardware imports. `servodriver.py` is now a clean hardware library (the `sts3032` / `Servoset` classes only — no app, no TUI, no `__main__`); `servo_server.py` is the interactive console on top of it. Running `servo_server.py` opens a curses control panel: a live servo monitor (select a servo + field with left/right to set its angle, toggle torque, or zero it), the manual controls (home / set-zero / de-hysteresis), and a switch to turn the `zmq_server.py` ZMQ server on/off (it runs in a background thread sharing the one serial connection, so the monitor/manual controls are hidden while it's on).
 
 ## Two ways the code runs
 
-1. **ZMQ server** — `STSServer.py` subclasses `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework. It listens on a ZMQ REP socket (port 60627), receives pickled `Sequence` objects (`sequence.py` is a vendored copy of the expctl class), and drives servos to the requested angles during the `QUEUE` phase. It also exposes an argparse CLI (`set_zero`, `home`, `set_angle`, `set_single`, `dehys`) parsed once at startup before entering the message loop.
-2. **Standalone scripts** — `clip_scan.py` and `calibrate_jacobian.py` are run directly as alignment/calibration routines (see Commands).
+1. **ZMQ server** — `zmq_server.py` (class `STSServer`) subclasses `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework. It listens on a ZMQ REP socket (port 60627), receives pickled `Sequence` objects (`sequence.py` is a vendored copy of the expctl class), and drives servos to the requested angles during the `QUEUE` phase. Its `Servoset` is *injected*, and `main_loop(cond_fn)` polls every 10 ms re-checking `cond_fn`, so `servo_server.py` can run it in a background thread (sharing one serial connection) and stop it cleanly.
+2. **Interactive console** — `servo_server.py` is the app: a curses control panel with the live servo monitor, the manual servo controls that used to be the ZMQ server's CLI (`set_zero`, `home`, `set_angle`, `set_single`, `dehys` — also usable one-shot as `python servo_server.py <cmd>`), and a switch to turn the ZMQ server on/off.
+3. **Standalone scripts** — `clip_scan.py` and `calibrate_jacobian.py` are run directly as alignment/calibration routines (see Commands).
 
 In production the whole `src/` tree is dropped into the expctl package as `expctl.servers.servoaligner` (note the `python -m expctl.servers.servoaligner.X` invocations); the `config/` dir and `state_folder` are set per deployment via `config/machine.yaml` (or `$SERVO_ALIGNER_CONFIG_DIR`). Run standalone, scripts use flat imports (`from servodriver import Servoset`) and must be launched from inside `src/`.
 
@@ -47,10 +48,15 @@ python init_helper.py          # installs deps, writes config, sets ids/multi-tu
 python clip_scan.py            # 2D raster scan of knob pairs, fit beam-clip center
 python calibrate_jacobian.py   # spiral + L-BFGS-B coupling optimization, derive Jacobian
 
+# Interactive console (control panel: monitor + manual controls + ZMQ on/off):
+python servo_server.py                    # control panel (TUI)
+python servo_server.py set_zero           # one-shot manual command (set_zero/home/set_angle/set_single/dehys)
+python zmq_server.py                       # run the ZMQ server directly (no console)
+
 # In production (installed under expctl on rydpiservo):
 python -m expctl.servers.servoaligner.init_helper        # first-time setup wizard
-python -m expctl.servers.servoaligner.STSServer          # start the ZMQ server
-python -m expctl.servers.servoaligner.STSServer set_zero # CLI subcommands
+python -m expctl.servers.servoaligner.zmq_server         # start the ZMQ server
+python -m expctl.servers.servoaligner.servo_server       # interactive console
 python -m expctl.servers.servoaligner.calibrate_jacobian
 # long-running scan, detached:
 nohup python -m expctl.servers.servoaligner.clip_scan > clip.log 2>&1 &
@@ -76,4 +82,4 @@ There is no build, lint, or test suite. The `example/notebooks/*.ipynb` are expl
 ## Vendored / external
 
 - `src/scservo_sdk/` — FEETECH's serial servo SDK, vendored unmodified (`doc/scservo_sdk_README.md`). Don't edit; it's upstream.
-- `sequence.py` / `SequenceProcessor.py` — copies of expctl framework code so the server can unpickle `Sequence` objects; `sequence.py` imports `utilities.util` from expctl and isn't importable standalone.
+- `sequence.py` / `SequenceProcessor.py` — copies of expctl framework code so the server can unpickle `Sequence` objects; `sequence.py` does `from utilities.util import *`. `src/utilities/util.py` is a minimal vendored stub of that (just the coloured-print helpers, routed to logging) so the ZMQ server can **start** when run standalone from `src/`; in the expctl deployment the real top-level `utilities` package shadows it (absolute import), so it only applies to standalone runs.

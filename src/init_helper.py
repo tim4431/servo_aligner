@@ -961,7 +961,7 @@ def guided_setup(args, config_dir, scan_max):
     print(
         "\nGuided setup done. Next steps:\n"
         "  - sanity-check config/machine.yaml and config/calibration.yaml\n"
-        "  - run `python STSServer.py set_zero` (or `home`) to set the servo zeros\n"
+        "  - run `python servo_server.py set_zero` (or `home`) to set the servo zeros\n"
         "  - see doc/motor.md for the register details and CLAUDE.md for the workflow"
     )
 

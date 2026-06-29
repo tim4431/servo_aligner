@@ -30,10 +30,11 @@ cp ../config/calibration.template.yaml ../config/calibration.yaml   # accept fun
 |------|------|
 | `init_helper.py` | First-run setup wizard: installs the deps in `../requirements.txt`, creates `../config/*.yaml` from the templates (comments preserved), prompts for each value, scans the bus to build the channel map, and assigns servo IDs / enables multi-turn (`Register 18 → 124`). Talks to the bus directly via `scservo_sdk`; safe to run before the YAML files exist, and never moves a servo. |
 | `config.py` (+ `../config/*.yaml`) | Loads the two YAML config files (machine hardware/software vs. optics/calibration) from `../config/` and exposes them as constants. Edit the YAML, not the code, when migrating. |
-| `servodriver.py` | `sts3032` (single motor) and `Servoset` (the 8-motor set): connect, move, multi-turn tracking, de-hysteresis, position persistence. |
+| `servodriver.py` | `sts3032` (single motor) and `Servoset` (the 8-motor set): connect, move, multi-turn tracking, de-hysteresis, position persistence. Clean hardware library — no app/TUI. |
+| `servo_server.py` / `tui.py` | Interactive console (curses control panel): live servo monitor, manual controls (set-zero/home/dehys, also one-shot via CLI), and a switch to turn the ZMQ server on/off. `tui.py` is the shared curses toolkit. |
 | `callback_functions.py` | The optimizer objectives: the MCP3424 photodiode ADC reader (over I2C), an `OBJECTIVES` registry (`intensity_adc`, …), and `make_callback_func(servos, objective)` that builds the move-then-measure `callback_func`. |
 | `scservo_sdk/` | Vendored FEETECH serial-servo SDK (do not edit). |
-| `STSServer.py` / `ServerClass.py` | ZMQ server that plugs into the lab `expctl` framework and drives servos from received sequences; also a small CLI. |
+| `zmq_server.py` / `ServerClass.py` | ZMQ server (class `STSServer`) that plugs into the lab `expctl` framework and drives servos from received sequences. Its `Servoset` is injected so `servo_server.py` can run it in a background thread. |
 | `sequence.py` / `SequenceProcessor.py` | Vendored expctl classes so the server can unpickle `Sequence` objects. |
 | `clip_scan.py` | 2D raster scan of knob pairs; fit beam-clip ellipse to find the center. |
 | `calibrate_jacobian.py` | Spiral + L-BFGS-B coupling optimization; derive the knob Jacobian. |
@@ -48,8 +49,12 @@ cp ../config/calibration.template.yaml ../config/calibration.yaml   # accept fun
 python clip_scan.py
 python calibrate_jacobian.py
 
+# Interactive console / one-shot manual commands:
+python servo_server.py                 # control panel (monitor + manual controls + ZMQ on/off)
+python servo_server.py set_zero        # or home / set_angle / set_single / dehys
+
 # As an installed expctl server:
-python -m expctl.servers.servoaligner.STSServer
+python -m expctl.servers.servoaligner.zmq_server
 ```
 
 See [`../CLAUDE.md`](../CLAUDE.md) for the architecture and core concepts, and the developer notes under `../tmp/` for the physics and algorithm rationale.

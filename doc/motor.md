@@ -105,7 +105,7 @@ on/off state, are set under `servo.de_hysteresis` in
 ### Toggling it
 
 - `servos.de_hysterisis` — defaults to `servo.de_hysteresis.enabled` in `machine.yaml` (set in `Servoset.__init__`).
-- CLI: the `dehys 0|1` subcommand (`STSServer.set_dehys_args`).
+- CLI: the `dehys 0|1` subcommand (`python servo_server.py dehys 0|1`).
 - It is a **speed/accuracy trade-off**: each negative move becomes *two* physical
   moves. [`calibrate_jacobian.py`](../src/calibrate_jacobian.py) runs with it **on** (accuracy matters);
   [`clip_scan.py`](../src/clip_scan.py) runs with it **off** (a long raster scan where speed wins).
