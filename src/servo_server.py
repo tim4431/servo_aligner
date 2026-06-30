@@ -10,18 +10,9 @@ control panel:
   * a switch to turn the **ZMQ server** (``zmq_server.py``) on and off -- it runs
     in a background thread sharing this console's single serial connection.
 
-Or run one-off commands without the UI (the old server-CLI subcommands):
-
-    python servo_server.py set_zero
-    python servo_server.py home
-    python servo_server.py set_angle 10 -5 0 ...
-    python servo_server.py set_single 3 12.5
-    python servo_server.py dehys 0|1
-
 In production (installed under expctl): ``python -m expctl.servers.servoaligner.servo_server``.
 """
 
-import argparse
 import collections
 import logging
 import sys
@@ -76,8 +67,7 @@ def servo_monitor_tui(servos, stdscr=None):
     field in that row to change (angle or torque -- the active field is
     highlighted). Enter edits the selected field: angle -> type / nudge a number,
     torque -> cycle off/on; Enter confirms (and moves, for angle), Esc cancels.
-    't' is a quick torque toggle, 'z' zeroes at the current shaft position,
-    'q' quits.
+    't' is a quick torque toggle, 'q' quits.
 
     Pass ``stdscr`` to run inside an existing curses session (the control panel);
     otherwise it opens its own ``curses.wrapper``.
@@ -89,7 +79,7 @@ def servo_monitor_tui(servos, stdscr=None):
         data["torque"] = list(servos.get_torque())
     except Exception:
         pass
-    COLS = ["angle", "torque"]   # the editable fields a row's cursor moves between
+    EDITABLE_FIELD = ["angle", "torque"]   # the editable fields a row's cursor moves between
 
     def refresh():
         try:
@@ -122,8 +112,8 @@ def servo_monitor_tui(servos, stdscr=None):
         for i in range(n):
             # ">" marks the selected servo row
             _safe_addstr(stdscr, 4 + i, 1, ">" if i == sel else " ", _attr_normal() | curses.A_BOLD)
-            ang = field_text(i, "angle", edit_text if (i == sel and COLS[col] == "angle") else None)
-            tq = field_text(i, "torque", edit_text if (i == sel and COLS[col] == "torque") else None)
+            ang = field_text(i, "angle", edit_text if (i == sel and EDITABLE_FIELD[col] == "angle") else None)
+            tq = field_text(i, "torque", edit_text if (i == sel and EDITABLE_FIELD[col] == "torque") else None)
             segs = [
                 (f"{i:>3}  {_servo_name(servos, i):<8} {servos.servo_list[i].SCS_ID:>3}  "
                  f"{int(data['pos'][i]):>9}  ", None),
@@ -133,11 +123,11 @@ def servo_monitor_tui(servos, stdscr=None):
             ]
             x = 3
             for text, field in segs:
-                active = i == sel and field is not None and field == COLS[col]
+                active = i == sel and field is not None and field == EDITABLE_FIELD[col]
                 _safe_addstr(stdscr, 4 + i, x, text, _attr_select() if active else _attr_normal())
                 x += len(text)
         foot = ("left/right or type to change - Enter confirm - Esc cancel" if edit_text is not None
-                else "up/down servo - left/right field - Enter edit - z zero - q quit")
+                else "up/down servo - left/right field - Enter edit - q quit")
         _safe_addstr(stdscr, h - 2, 1, foot, _attr_normal() | curses.A_DIM)
         _draw_status(stdscr)
         stdscr.refresh()
@@ -161,7 +151,7 @@ def servo_monitor_tui(servos, stdscr=None):
             _status(f"servo {i}: move failed ({e})")
 
     def edit_field(stdscr, sel, col):
-        field = COLS[col]
+        field = EDITABLE_FIELD[col]
         if field == "angle":
             ed = _NumberEditor(round(float(data["ang"][sel]), 2), step=1.0, cast=float,
                                fmt=lambda v: f"{v:.2f}")
@@ -204,7 +194,7 @@ def servo_monitor_tui(servos, stdscr=None):
             elif c == curses.KEY_LEFT:
                 col = max(0, col - 1)            # clamp -- don't wrap to the rightmost
             elif c == curses.KEY_RIGHT:
-                col = min(len(COLS) - 1, col + 1)  # clamp -- don't wrap to the leftmost
+                col = min(len(EDITABLE_FIELD) - 1, col + 1)  # clamp -- don't wrap to the leftmost
             elif ord("0") <= c <= ord("9") and (c - ord("0")) < n:
                 sel = c - ord("0")
             elif c in (ord("q"), 27):
@@ -213,19 +203,6 @@ def servo_monitor_tui(servos, stdscr=None):
                 edit_field(stdscr, sel, col)
             elif c in (ord("t"), ord("T")):   # quick torque toggle shortcut
                 set_torque(sel, not data["torque"][sel])
-            elif c in (ord("z"), ord("Z")):
-                stdscr.timeout(-1)   # block during the confirm dialog
-                ok = _tui_confirm(stdscr, f"Set servo {sel}'s current position as zero?", double=True)
-                stdscr.timeout(600)
-                if not ok:
-                    _status("set-zero cancelled")
-                    continue
-                try:
-                    with _quiet():
-                        servos.set_zero_single(sel)
-                    _status(f"servo {sel}: zero set at current position")
-                except Exception as e:
-                    _status(f"servo {sel}: set-zero failed ({e})")
 
     if stdscr is not None:        # run inside the control panel's curses session
         try:
@@ -506,44 +483,10 @@ def control_panel(servos):
         logging.disable(saved_disable)
 
 
-# --- One-off command-line controls (the old ZMQ-server CLI, merged here) ------
-def _build_parser():
-    p = argparse.ArgumentParser(
-        description="Servo console: interactive panel with no args, or a one-shot command below.")
-    sub = p.add_subparsers(dest="cmd")
-    sub.add_parser("set_zero", help="set the current pose as zero (all servos)")
-    sub.add_parser("home", help="move all servos to 0 deg")
-    pa = sub.add_parser("set_angle", help="move all channels to the given angles (deg)")
-    pa.add_argument("angle", nargs="+", type=float)
-    ps = sub.add_parser("set_single", help="move one channel (by index) to an angle (deg)")
-    ps.add_argument("index", type=int)
-    ps.add_argument("angle", type=float)
-    pd = sub.add_parser("dehys", help="de-hysteresis off (0) / on (1)")
-    pd.add_argument("state", type=int)
-    return p
-
-
-def _run_cli(servos, args):
-    if args.cmd == "set_zero":
-        servos.set_zero()
-    elif args.cmd == "home":
-        servos.home()
-    elif args.cmd == "set_angle":
-        servos.set_angle(args.angle)
-    elif args.cmd == "set_single":
-        servos.set_single(args.index, args.angle)
-    elif args.cmd == "dehys":
-        servos.de_hysterisis = bool(args.state)
-        print(f"de-hysteresis {'on' if servos.de_hysterisis else 'off'}")
-
-
 if __name__ == "__main__":
-    args = _build_parser().parse_args()
     servos = Servoset(SERVER["board_id"], SERVO_CHANNEL_LIST)
     try:
-        if args.cmd:
-            _run_cli(servos, args)
-        elif tui_available():
+        if tui_available():
             control_panel(servos)
         else:
             # Non-interactive (piped / no terminal): print a one-shot snapshot.

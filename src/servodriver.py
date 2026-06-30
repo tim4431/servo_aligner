@@ -329,30 +329,27 @@ class Servoset:
     #     # also save when object is destroyed
     #     self.save()
 
-    def _log_zero_history(self, channels, previous_positions, scope):
+    def _log_zero_history(self, previous_positions):
         """Append the pre-zero encoder readings to a per-board history log.
 
-        set_zero / set_zero_single redefine a servo's current shaft position as
-        ENCODER_CENTER (FEETECH "set middle"), discarding its old encoder
-        reading. We append that reading here -- timestamped -- so a previous
-        "zero" can be traced back later. To return a servo to the zero that was
-        in force *before* the call, command it (in the new frame) to the logged
+        set_zero redefines every servo's current shaft position as
+        ENCODER_CENTER (FEETECH "set middle"), discarding the old encoder
+        readings. We append them here -- timestamped -- so a previous "zero"
+        can be traced back later. To return a servo to the zero that was in
+        force *before* the call, command it (in the new frame) to the logged
         `revert_position` = 2*ENCODER_CENTER - previous_position: "set middle"
         maps the old reading P onto ENCODER_CENTER, so the same fixed shaft
         position the old zero pointed at now reads 2*ENCODER_CENTER - P.
 
-        `channels` are the channel indices being zeroed; `previous_positions`
-        are their encoder readings (same order). One JSON object per line
-        (JSONL), appended, so the file is an append-only audit trail.
+        One JSON object per line (JSONL), appended, so the file is an
+        append-only audit trail.
         """
         try:
             previous_positions = [int(p) for p in previous_positions]
             record = {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "board_id": self.board_id,
-                "scope": scope,
-                "channels": list(channels),
-                "servo_ids": [self.SCS_ID_list[i] for i in channels],
+                "servo_ids": list(self.SCS_ID_list),
                 "previous_position": previous_positions,
                 "previous_angle_deg": [
                     round(float(a), 4)
@@ -369,8 +366,7 @@ class Servoset:
             with history_file.open("a") as f:
                 f.write(json.dumps(record) + "\n")
             logging.info(
-                "Recorded previous zero (%s) to %s: pos=%s",
-                scope,
+                "Recorded previous zero to %s: pos=%s",
                 history_file.name,
                 previous_positions,
             )
@@ -378,26 +374,18 @@ class Servoset:
             # Never let history bookkeeping prevent the actual zero operation.
             logging.error("Failed to record set_zero history: %s", e)
 
-    def _read_positions_for_zero(self, what):
-        """Best-effort fresh encoder readings to log before a zero operation.
-
-        Falls back to the last-known cache if the bus read fails, so logging
-        never blocks the zero itself.
-        """
-        try:
-            return list(self.get_position())
-        except Exception as e:
-            logging.error("Could not read positions before %s: %s", what, e)
-            return list(self.multi_position_list)
-
     def set_zero(self):
         logging.info("Setting Zero")
         # Record the encoder readings about to be wiped before "set middle"
         # redefines every current pose as ENCODER_CENTER (see _log_zero_history).
-        previous_positions = self._read_positions_for_zero("set_zero")
-        self._log_zero_history(
-            list(range(len(self.SCS_ID_list))), previous_positions, scope="all"
-        )
+        # Best-effort fresh read; fall back to the cache so logging never blocks
+        # the zero itself.
+        try:
+            previous_positions = list(self.get_position())
+        except Exception as e:
+            logging.error("Could not read positions before set_zero: %s", e)
+            previous_positions = list(self.multi_position_list)
+        self._log_zero_history(previous_positions)
         for servo in self.servo_list:
             iteration = 1
             while 1:
@@ -407,27 +395,6 @@ class Servoset:
                     break
                 iteration += 1
         self.multi_position_list = [ENCODER_CENTER] * len(self.SCS_ID_list)
-        self.save()
-
-    def set_zero_single(self, index):
-        """Zero a single servo (by channel index) and record its previous pose.
-
-        The single-servo counterpart of set_zero(): the monitor TUI uses this
-        instead of reaching into servo_list[index] directly, so the pre-zero
-        encoder reading is logged (see _log_zero_history) and the cached
-        position stays authoritative -- mirroring how set_torque wraps the
-        per-servo torque toggle.
-        """
-        previous_positions = self._read_positions_for_zero("set_zero_single")
-        self._log_zero_history([index], [previous_positions[index]], scope="single")
-        iteration = 1
-        while 1:
-            logging.debug("Set Zero Single Trail " + str(iteration))
-            result = self.servo_list[index].set_zero()
-            if result == 0:
-                break
-            iteration += 1
-        self.multi_position_list[index] = ENCODER_CENTER
         self.save()
 
     def set_torque(self, i, on):
