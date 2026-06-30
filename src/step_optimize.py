@@ -13,6 +13,29 @@ spiral_params = SpiralPathConfig(**SPIRAL_PARAMS)
 BFGS_params = dict(BFGS_PARAMS)
 
 
+def score_of(opt_type: str) -> Callable:
+    """Map an objective value to a score the optimizers always *maximize*.
+
+    All three optimizers below hunt for the largest score, so the optimization
+    direction is expressed purely as this transform of the raw objective value:
+
+    =========  ===============  ============================================
+    opt_type   score(value)     effect
+    =========  ===============  ============================================
+    "max"      ``value``        maximize the objective (default)
+    "min"      ``-value``       minimize the objective
+    "zero"     ``-abs(value)``  drive the objective toward 0 (min magnitude)
+    =========  ===============  ============================================
+    """
+    if opt_type == "max":
+        return lambda v: v
+    if opt_type == "min":
+        return lambda v: -v
+    if opt_type == "zero":
+        return lambda v: -abs(v)
+    raise ValueError(f"unknown opt_type: {opt_type!r} (expected 'max'/'min'/'zero')")
+
+
 def pts_iterator(
     N_var: int,
     callback_func: Callable,
@@ -20,35 +43,43 @@ def pts_iterator(
     bounds: List[Tuple[float, float]] = [(-50, 50), (-50, 50)],
     method: str = "spiral",
     options: dict = {},
+    opt_type: str = "max",
 ):
-    """Maximize a noisy objective over `N_var` knobs and return the best point seen.
+    """Optimize a noisy objective over `N_var` knobs and return the best point seen.
 
     Dispatches to one of three optimizers, records every evaluated
     ``(para, intensity)`` sample, and plots the search trace and convergence curve.
 
     Args:
         N_var: Number of free parameters (must match ``len(p0)`` and ``len(bounds)``).
-        callback_func: Objective ``para -> (para, intensity)``; intensity is maximized.
+        callback_func: Objective ``para -> (para, intensity)``.
         p0: Starting point.
         bounds: Per-parameter ``(min, max)`` limits.
         method: ``"spiral"`` (custom spiral descent, 2D only), ``"L-BFGS-B"``, or ``"Powell"``.
         options: Optimizer options dict (e.g. ``spiral_params`` / ``BFGS_params``).
+        opt_type: ``"max"`` / ``"min"`` / ``"zero"`` — the direction, applied via
+            :func:`score_of` (every optimizer maximizes that score internally).
 
     Returns:
-        ``(best_para, best_intensity)`` — the highest-intensity sample observed.
+        ``(best_para, best_intensity)`` — the raw-objective sample with the best
+        score for ``opt_type`` (e.g. the highest intensity when maximizing).
     """
     assert len(p0) == N_var, ValueError(f"len(p0) should be {N_var}")
     assert len(bounds) == N_var, ValueError(f"len(bounds) should be {N_var}")
     if method == "spiral":
         assert N_var == 2, ValueError("Only 2D spiral path is supported")
 
+    score = score_of(opt_type)
     datas = []
 
-    def _optimize_wrapper(datas, callback_func, paras, multiplier: int = 1):
+    def _optimize_wrapper(datas, callback_func, paras, for_minimizer: bool = False):
+        # Record the raw objective; hand the optimizer the score (negated when the
+        # optimizer minimizes, so minimizing -score == maximizing score).
         para, T = callback_func(paras)
         datas.append((para, T))
         logging.debug(f"{format_para(para)}; T={T}")
-        return multiplier * T
+        s = score(T)
+        return -s if for_minimizer else s
 
     sp = SpiralPath()
 
@@ -56,7 +87,7 @@ def pts_iterator(
         para = p0
         if method == "L-BFGS-B":
             para = scipy.optimize.minimize(
-                lambda para: _optimize_wrapper(datas, callback_func, para, multiplier=-1),
+                lambda para: _optimize_wrapper(datas, callback_func, para, for_minimizer=True),
                 x0=p0,
                 method="L-BFGS-B",
                 bounds=bounds,
@@ -64,7 +95,7 @@ def pts_iterator(
             ).x
         elif method == "Powell":
             para = scipy.optimize.minimize(
-                lambda para: _optimize_wrapper(datas, callback_func, para, multiplier=-1),
+                lambda para: _optimize_wrapper(datas, callback_func, para, for_minimizer=True),
                 x0=p0,
                 method="Powell",
                 bounds=bounds,
@@ -72,7 +103,7 @@ def pts_iterator(
             ).x
         elif method == "spiral":
             para = sp.maximize(
-                lambda para: _optimize_wrapper(datas, callback_func, para, multiplier=1),
+                lambda para: _optimize_wrapper(datas, callback_func, para, for_minimizer=False),
                 x0=para,
                 bounds=bounds,
                 options=options,
@@ -80,9 +111,9 @@ def pts_iterator(
 
         logging.info("Converged position: {:s}".format(format_para(para)))
 
-        # >>> statistics: best point <<<
+        # >>> statistics: best point (largest score for this opt_type) <<<
         paras, Ts = zip(*datas)
-        idx = np.argmax(Ts)
+        idx = int(np.argmax([score(T) for T in Ts]))
         Tbst = Ts[idx]
         parabst = paras[idx]
         logging.info(f"Best point: {format_para(parabst)}; T={Tbst}")
@@ -124,6 +155,8 @@ def step_optimize(servos,
                   zero=None,
                   method="spiral",
                   bounds_single = (-100,100),
+                  opt_type="max",
+                  accept_frac=0.7,
                   )->np.ndarray:
     #
     if method == 'L-BFGS-B':
@@ -143,17 +176,31 @@ def step_optimize(servos,
     Istart = cf(p0)[1]
     logging.info(f"Start position: {format_para(p0)}, start I: {Istart}")
     #
-    para, Ibst = pts_iterator(N_var=N_var,callback_func=cf, p0=p0, bounds = bounds, options=options, method = method)
+    para, Ibst = pts_iterator(N_var=N_var,callback_func=cf, p0=p0, bounds = bounds, options=options, method = method, opt_type=opt_type)
     #
     para = list(para)
     Inow = cf(para)[1]
     logging.info(f"Best position: {format_para(para)}, now I: {Inow}")
     #
-    if Inow/Ibst > 0.7:
+    # Re-measurement guard: only commit the new origin if re-reading the best
+    # point confirms the improvement (guards against a noise spike that looked
+    # like a great sample). For "max" this is the original positive-intensity
+    # ratio test, unchanged. For "min"/"zero" raw values can be negative, so the
+    # guard is expressed in score space (see score_of) as a fraction of the gain
+    # over the start: keep the move if re-reading retains >= accept_frac of it.
+    if opt_type == "max":
+        accept = Inow / Ibst > accept_frac
+    else:
+        score = score_of(opt_type)
+        gain = score(Ibst) - score(Istart)
+        retained = score(Inow) - score(Istart)
+        accept = retained >= accept_frac * gain if gain > 0 else retained >= 0
+    #
+    if accept:
         logging.info(f"New Origin set to be {format_para(para)}")
         zero_fullnd = nraddr(zero,para,pos_mask)
     else:
-        logging.info("The intensity is not high enough, operation cancelled.")
+        logging.info("The improvement was not confirmed on re-measure, operation cancelled.")
         zero_fullnd = np.array(zero)
     #
     logging.info(f"Zero = {zero_fullnd}")

@@ -100,11 +100,13 @@ N_CHANNELS = len(_channels)
 MASKS = {name: list(m) for name, m in MACHINE["servo"]["masks"].items()}
 
 
-def knob_mask(path, group):
+def knob_mask(path, group=None):
     """Channel mask for a knob group on a beam path, e.g. knob_mask("A", "X_XDOT").
 
     Looks up MASKS["<path>_<group>"]; ``path`` is "A" (upper) or "B" (lower).
     """
+    if group == None:
+        return MASKS[f"{path}"]
     return MASKS[f"{path}_{group}"]
 
 

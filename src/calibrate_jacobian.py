@@ -13,7 +13,7 @@ logging.basicConfig(
 
 from servodriver import Servoset
 from servo_util import compose_para
-from step_optimize import step_optimize
+from optimize import fiber_coupling
 from callback_functions import make_callback_func, intensity_adc
 from config import (SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN,
                     MASKS, knob_mask)
@@ -119,14 +119,9 @@ for i in range(N):
     #
     try:
         logging.info(f"Start optimization with zero = {zero}")
-        # servos.de_hysterisis=False
-        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "X_Y"),zero=zero,bounds_single = (-100,100))
-        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "X_XDOT"),zero=zero)
-        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "Y_YDOT"),zero=zero)
-        # servos.de_hysterisis=True
-        zero = step_optimize(servos,callback_func,pos_mask = knob_mask(SLAVE, "POS_ALL"),zero=zero,method='L-BFGS-B')
-        #
-        _,I = callback_func(zero,pos_mask=MASKS["POS_ALL"])
+        # The fiber-coupling step sequence (X_Y -> X_XDOT -> Y_YDOT -> joint
+        # L-BFGS-B over POS_ALL) now lives in optimize.fiber_coupling.
+        zero, I = fiber_coupling(servos, callback_func, zero, path=SLAVE)
         print(I)
         #
         if offset_type in ['pm','rand','lin']:
