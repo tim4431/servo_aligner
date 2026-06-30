@@ -45,12 +45,13 @@ class sts3032:
         # one serial port without their transactions interleaving (see Servoset).
         self.lock = lock or threading.RLock()
         self.SCS_ID = sts3032_dict[channel][0]
-        self.SCS_MOVING_SPEED = 1500  # SCServo moving speed
-        self.SCS_MOVING_ACC = 50  # SCServo moving acc
+        # Last speed/acc pushed to the servo. The real values come from config
+        # (SERVO_SPEED / SERVO_ACC) and are applied by Servoset.refresh() via
+        # set_speed()/set_acc() -- the low-level sts3032 deliberately writes
+        # nothing to hardware on construction. None == not pushed yet.
+        self.SCS_MOVING_SPEED = None
+        self.SCS_MOVING_ACC = None
         self.message = "Servo " + sts3032_dict[channel][1] + ": "
-        # atexit.register(self.home)
-        self.set_acc(self.SCS_MOVING_ACC)
-        self.set_speed(self.SCS_MOVING_SPEED)
 
     def set_register(self, address, value, length=1):
         """Write `value` (1/2/4 bytes) to control-table `address` on this servo.
@@ -70,6 +71,26 @@ class sts3032:
         elif scs_error != 0:
             logging.error(self.message + self.packetHandler.getRxPacketError(scs_error))
         return scs_comm_result, scs_error
+
+    def read_register(self, address, length=1):
+        """Read `length` bytes (1/2/4) from control-table `address` on this servo.
+
+        Symmetric counterpart to set_register: runs the single read transaction
+        under the bus lock and logs any comm/servo error. Returns
+        (value, comm_result, error); value is 0 on a failed read.
+        """
+        reader = {
+            1: self.packetHandler.read1ByteTxRx,
+            2: self.packetHandler.read2ByteTxRx,
+            4: self.packetHandler.read4ByteTxRx,
+        }[length]
+        with self.lock:
+            value, scs_comm_result, scs_error = reader(self.SCS_ID, address)
+        if scs_comm_result != COMM_SUCCESS:
+            logging.info(self.message + self.packetHandler.getTxRxResult(scs_comm_result))
+        elif scs_error != 0:
+            logging.error(self.message + self.packetHandler.getRxPacketError(scs_error))
+        return value, scs_comm_result, scs_error
 
     def set_zero(self):
         # Writing 128 to the torque-enable register tells the servo to treat its
@@ -149,7 +170,11 @@ class Servoset:
             servo = sts3032(channel, self.packetHandler, self.lock)
             servo.set_acc(SERVO_ACC)
             servo.set_speed(SERVO_SPEED)
-            servo.torque_enable()
+            # NB: torque is deliberately NOT enabled here -- refresh() must not
+            # energise the motors as a side effect of connecting. Callers that
+            # need holding torque (clip_scan / calibrate_jacobian / the ZMQ
+            # server) enable it explicitly via torques_enable(); use get_torque()
+            # to read the current per-servo state.
             self.servo_list.append(servo)
 
         self.SCS_ID_list = []
@@ -159,6 +184,8 @@ class Servoset:
         # get_position() (load = output-torque proxy, ~0.1% of max, signed)
         self.multi_speed_list = [0] * len(self.SCS_ID_list)
         self.multi_load_list = [0] * len(self.SCS_ID_list)
+        # per-servo torque-enable state (read on demand by get_torque())
+        self.multi_torque_list = [False] * len(self.SCS_ID_list)
         #
         self.file = Path(STATE_FOLDER) / "servos_{:s}.json".format(str(self.board_id))
         self.file.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +205,12 @@ class Servoset:
             self.packetHandler, ADDR_STS_MOVING_STATUS, 1
         )
         self.set_group_sync_read(self.groupSyncRead_status)
+        # 1-byte read of the torque-enable register (40) -- lets get_torque()
+        # query every servo's on/off state in a single bus transaction.
+        self.groupSyncRead_torque = GroupSyncRead(
+            self.packetHandler, ADDR_STS_TORQUE_ENABLE, 1
+        )
+        self.set_group_sync_read(self.groupSyncRead_torque)
         self.groupSyncWrite_position = GroupSyncWrite(
             self.packetHandler, ADDR_STS_GOAL_POSITION, 2
         )
@@ -313,15 +346,26 @@ class Servoset:
         self.multi_position_list = [ENCODER_CENTER] * len(self.SCS_ID_list)
         self.save()
 
+    def set_torque(self, i, on):
+        # Per-servo torque toggle (by channel index), keeping the cached
+        # multi_torque_list in sync. The single-servo counterpart of the
+        # mask-based torques_enable/torques_disable -- the monitor TUI uses this
+        # instead of reaching into servo_list[i] directly, so every torque write
+        # goes through Servoset and the cache stays authoritative.
+        (self.servo_list[i].torque_enable if on else self.servo_list[i].torque_disable)()
+        self.multi_torque_list[i] = bool(on)
+
     def torques_enable(self, mask=None):
         for i, servo in enumerate(self.servo_list):
             if mask is None or mask[i]:
                 servo.torque_enable()
+                self.multi_torque_list[i] = True
 
     def torques_disable(self, mask=None):
         for i, servo in enumerate(self.servo_list):
             if mask is None or mask[i]:
                 servo.torque_disable()
+                self.multi_torque_list[i] = False
 
     def home(self):
         logging.info("going home")
@@ -431,6 +475,17 @@ class Servoset:
         # get_position() sync-read, so reading torque costs no extra round-trip.
         self.get_position()
         return list(self.multi_load_list)
+
+    def get_torque(self):
+        # Query the torque-enable register (40) of every servo in one sync-read
+        # and return a list of bools (True = torque on). Cached in
+        # self.multi_torque_list. Unlike torques_enable(), this only reads --
+        # it never energises a motor.
+        torque_raw = self.group_sync_read(
+            self.groupSyncRead_torque, ADDR_STS_TORQUE_ENABLE, 1
+        )
+        self.multi_torque_list = [bool(t) for t in torque_raw]
+        return list(self.multi_torque_list)
 
     def moving_status(self):
         sts_moving_status = self.group_sync_read(

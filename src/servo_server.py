@@ -32,7 +32,7 @@ from servodriver import Servoset
 from tui import (
     curses, tui_available, _init_theme, _safe_addstr, _attr_normal, _attr_select,
     _status, _draw_status, _flash_status, _NumberEditor, _quiet,
-    _it_action, _it_run, _tui_page, _tui_confirm,
+    _it_action, _it_run, _tui_page, _tui_confirm, _tui_message,
 )
 
 # Ring buffer of the ZMQ server's log/print lines, shown on the ZMQ page. While
@@ -83,8 +83,12 @@ def servo_monitor_tui(servos, stdscr=None):
     otherwise it opens its own ``curses.wrapper``.
     """
     n = len(servos.servo_list)
-    torque = [True] * n   # Servoset.refresh() enabled torque on every servo
-    data = {"pos": [0] * n, "ang": [0.0] * n, "load": [0] * n}
+    data = {"pos": [0] * n, "ang": [0.0] * n, "load": [0] * n, "torque": [False] * n}
+    # Query the real torque state up front (refresh() no longer force-enables it).
+    try:
+        data["torque"] = list(servos.get_torque())
+    except Exception:
+        pass
     COLS = ["angle", "torque"]   # the editable fields a row's cursor moves between
 
     def refresh():
@@ -94,6 +98,8 @@ def servo_monitor_tui(servos, stdscr=None):
                 data["pos"] = list(pos)
                 data["ang"] = list(servos.position_to_angle(pos))
                 data["load"] = list(servos.multi_load_list)
+                # keep the torque column honest if it is toggled out of band
+                data["torque"] = list(servos.get_torque())
         except Exception as e:
             _status(f"read error: {e}")
 
@@ -102,7 +108,7 @@ def servo_monitor_tui(servos, stdscr=None):
             return f"[ {editing} ]"
         if field == "angle":
             return f"{float(data['ang'][i]):.2f}"
-        return "on" if torque[i] else "off"
+        return "on" if data["torque"][i] else "off"
 
     def draw(stdscr, sel, col, edit_text=None):
         stdscr.erase()
@@ -139,8 +145,8 @@ def servo_monitor_tui(servos, stdscr=None):
     def set_torque(i, on):
         try:
             with _quiet():
-                (servos.servo_list[i].torque_enable if on else servos.servo_list[i].torque_disable)()
-            torque[i] = on
+                servos.set_torque(i, on)
+            data["torque"][i] = on
             _status(f"servo {i}: torque {'on' if on else 'off'}")
         except Exception as e:
             _status(f"servo {i}: torque change failed ({e})")
@@ -160,7 +166,7 @@ def servo_monitor_tui(servos, stdscr=None):
             ed = _NumberEditor(round(float(data["ang"][sel]), 2), step=1.0, cast=float,
                                fmt=lambda v: f"{v:.2f}")
         else:  # torque: cycle off/on
-            ed = _NumberEditor(bool(torque[sel]), options=[False, True],
+            ed = _NumberEditor(bool(data["torque"][sel]), options=[False, True],
                                fmt=lambda v: "on" if v else "off")
         stdscr.timeout(-1)   # block (no refresh ticks) while editing one field
         try:
@@ -206,7 +212,7 @@ def servo_monitor_tui(servos, stdscr=None):
             elif c in (curses.KEY_ENTER, 10, 13):
                 edit_field(stdscr, sel, col)
             elif c in (ord("t"), ord("T")):   # quick torque toggle shortcut
-                set_torque(sel, not torque[sel])
+                set_torque(sel, not data["torque"][sel])
             elif c in (ord("z"), ord("Z")):
                 stdscr.timeout(-1)   # block during the confirm dialog
                 ok = _tui_confirm(stdscr, f"Set servo {sel}'s current position as zero?", double=True)
@@ -338,12 +344,81 @@ def zmq_page(stdscr, zmq):
         stdscr.timeout(-1)
 
 
+def objectives_page(stdscr, state):
+    """List the objective (callback) functions with their live values; pick one.
+
+    The objectives are ``callback_functions.OBJECTIVES`` -- the scalar signals the
+    optimizers maximize (e.g. photodiode intensity over the ADC). Each value is
+    read through ``read_objective``, which returns NaN if the hardware is absent
+    or a read fails, so a row shows "NaN" instead of crashing the panel. The
+    active objective (``state["objective"]``) is marked with "*"; Enter on a row
+    makes it active. Refreshes on a timer so the values stay live.
+
+    ``callback_functions`` is imported lazily (it pulls in the I2C ADC libs), so
+    the rest of the console still works if that import is unavailable.
+    """
+    try:
+        from callback_functions import OBJECTIVES, read_objective
+    except Exception as e:
+        _tui_message(stdscr, [f"objective functions unavailable: {e}"])
+        return
+    names = list(OBJECTIVES)
+    if not names:
+        _tui_message(stdscr, ["no objective functions are registered"])
+        return
+    sel = names.index(state["objective"]) if state.get("objective") in names else 0
+    stdscr.timeout(700)   # getch returns -1 after 0.7 s so the values refresh
+    try:
+        while True:
+            stdscr.erase()
+            h, _w = stdscr.getmaxyx()
+            _safe_addstr(stdscr, 0, 1, "Objective (callback) functions",
+                         _attr_normal() | curses.A_BOLD)
+            _safe_addstr(stdscr, 1, 1, "live sensor reads -- '*' marks the active objective",
+                         _attr_normal() | curses.A_DIM)
+            _safe_addstr(stdscr, 3, 3, f"{'name':<22}  {'value':>14}",
+                         _attr_normal() | curses.A_BOLD)
+            for i, name in enumerate(names):
+                val = read_objective(OBJECTIVES[name])
+                shown = "NaN" if val != val else f"{val:.4f}"   # val != val is True only for NaN
+                active = "*" if name == state.get("objective") else " "
+                _safe_addstr(stdscr, 4 + i, 1, ">" if i == sel else " ",
+                             _attr_normal() | curses.A_BOLD)
+                _safe_addstr(stdscr, 4 + i, 3, f"{active} {name:<22}  {shown:>14}",
+                             _attr_select() if i == sel else _attr_normal())
+            _safe_addstr(stdscr, h - 2, 1, "up/down move - Enter toggle active - q back",
+                         _attr_normal() | curses.A_DIM)
+            _draw_status(stdscr)
+            stdscr.refresh()
+            c = stdscr.getch()
+            if c == -1:
+                continue   # timer tick: just re-read the values
+            if c in (curses.KEY_UP, ord("k")):
+                sel = (sel - 1) % len(names)
+            elif c in (curses.KEY_DOWN, ord("j")):
+                sel = (sel + 1) % len(names)
+            elif c in (ord("q"), 27):
+                break
+            elif c in (curses.KEY_ENTER, 10, 13):
+                # Enter on the active row de-selects it (toggle), so you can clear
+                # the choice -- handy when none of the objectives read a value.
+                if state.get("objective") == names[sel]:
+                    state["objective"] = None
+                    _status(f"objective deselected ({names[sel]})")
+                else:
+                    state["objective"] = names[sel]
+                    _status(f"active objective: {names[sel]}")
+    finally:
+        stdscr.timeout(-1)
+
+
 def control_panel(servos):
     """Interactive control panel: the ZMQ server page (run it in the background +
     watch its log), the live servo monitor, and the manual controls. The server
     and the console share one ``Servoset``, whose bus lock serialises access, so
     the monitor / manual controls work even while the server is running."""
     zmq = ZmqController(servos)
+    state = {"objective": None}   # active objective function, selected on its page
 
     def panel(stdscr):
         curses.curs_set(0)
@@ -353,6 +428,10 @@ def control_panel(servos):
         # only "Quit" / q exits the page.
         def open_zmq():
             zmq_page(stdscr, zmq)
+            _init_theme(stdscr)
+
+        def open_objectives():
+            objectives_page(stdscr, state)
             _init_theme(stdscr)
 
         # The manual controls and the monitor work even while the server is
@@ -388,10 +467,11 @@ def control_panel(servos):
             _status(f"de-hysteresis turned {'on' if servos.de_hysterisis else 'off'}")
 
         def build():
-            state = f"RUNNING (port {SERVER['port']})" if zmq.running() else "stopped"
+            zmq_state = f"RUNNING (port {SERVER['port']})" if zmq.running() else "stopped"
             return [
-                _it_run(f"ZMQ server: {state}   [open]", open_zmq),
+                _it_run(f"ZMQ server: {zmq_state}   [open]", open_zmq),
                 _it_run("Servo monitor  (live table)", run_monitor),
+                _it_run(f"Objective: {state['objective'] or '-'}   [select]", open_objectives),
                 _it_run("Home all servos (0 deg)", do_home),
                 _it_run("Set current pose as zero (all servos)", do_zero),
                 _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
