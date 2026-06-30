@@ -20,7 +20,7 @@ from config import (SERVER, SERVO_CHANNEL_LIST, COUPLING_VECTORS, JACOBIAN,
 
 servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis=True
-servos.torques_enable()
+servos.set_torque(True)
 # servos.home()
 
 # Objective: photodiode intensity over the ADC (see callback_functions.OBJECTIVES).

@@ -134,8 +134,9 @@ def servo_monitor_tui(servos, stdscr=None):
 
     def set_torque(i, on):
         try:
+            pos_mask = [1 if j == i else 0 for j in range(n)]
             with _quiet():
-                servos.set_torque(i, on)
+                servos.set_torque(on, pos_mask)
             data["torque"][i] = on
             _status(f"servo {i}: torque {'on' if on else 'off'}")
         except Exception as e:

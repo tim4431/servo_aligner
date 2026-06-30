@@ -35,7 +35,7 @@ from config import (
 
 servos = Servoset(board_id=SERVER["board_id"], servo_channel_list=SERVO_CHANNEL_LIST)
 servos.de_hysterisis = False
-servos.torques_enable()
+servos.set_torque(True)
 
 # Run folder for scan results, under the data/ root (warns if it already exists).
 STORE = DataStore(CLIP_SCAN.get("output_subdir", "clip_scan"))

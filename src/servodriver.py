@@ -180,8 +180,11 @@ class Servoset:
         # get_position() (load = output-torque proxy, ~0.1% of max, signed)
         self.multi_speed_list = [0] * len(self.SCS_ID_list)
         self.multi_load_list = [0] * len(self.SCS_ID_list)
-        # per-servo torque-enable state (read on demand by get_torque())
         self.multi_torque_list = [False] * len(self.SCS_ID_list)
+        # Last-known encoder positions: centered (0 deg) until load() restores
+        # them from disk. Kept here with the other per-servo caches so save()
+        # and every reader always find it set, whatever path load() takes.
+        self.multi_position_list = [ENCODER_CENTER] * len(self.SCS_ID_list)
         #
         self.file = Path(STATE_FOLDER) / "servos_{:s}.json".format(str(self.board_id))
         self.file.parent.mkdir(parents=True, exist_ok=True)
@@ -201,8 +204,6 @@ class Servoset:
             self.packetHandler, ADDR_STS_MOVING_STATUS, 1
         )
         self.set_group_sync_read(self.groupSyncRead_status)
-        # 1-byte read of the torque-enable register (40) -- lets get_torque()
-        # query every servo's on/off state in a single bus transaction.
         self.groupSyncRead_torque = GroupSyncRead(
             self.packetHandler, ADDR_STS_TORQUE_ENABLE, 1
         )
@@ -270,60 +271,50 @@ class Servoset:
         self.file.write_text(json.dumps(dct, indent=2))
 
     def load(self):
-        if self.file.exists():  # load existing data
-            logging.info("loading position from disk")
-            try:
-                # load position from file
-                dct = json.loads(self.file.read_text())
-                positions = dct["position"]
-                # Stale-state guard: the channel map changed since this was saved.
-                if len(positions) != len(self.SCS_ID_list):
-                    logging.warning(
-                        "Saved state has %d positions but %d servos are connected; "
-                        "ignoring stale file and centering.",
-                        len(positions),
-                        len(self.SCS_ID_list),
-                    )
-                    self.multi_position_list = list(
-                        np.ones(len(self.SCS_ID_list)) * ENCODER_CENTER
-                    )
-                    self.save()
-                    return
-                saved_ids = dct.get("servo_ids")
-                if saved_ids is not None and list(saved_ids) != list(self.SCS_ID_list):
-                    logging.warning(
-                        "Saved servo IDs %s differ from connected %s; positions may be stale.",
-                        saved_ids,
-                        self.SCS_ID_list,
-                    )
-                self.multi_position_list = positions
-                message = "Loaded, the positions are: \n"
-                for i in range(len(self.multi_position_list)):
-                    message += self.servo_list[i].message
-                    message += (
-                        str(
-                            (self.multi_position_list[i] - ENCODER_CENTER)
-                            * DEGREES_PER_TURN
-                            / COUNTS_PER_TURN
-                        )
-                        + " deg\t"
-                    )
-                logging.info(message)
-            except Exception as e:
-                logging.error(
-                    f"Error loading position from disk: {e}; centering instead."
-                )
-                self.multi_position_list = list(
-                    np.ones(len(self.SCS_ID_list)) * ENCODER_CENTER
-                )
-                self.save()
-        else:
-            logging.info("No position data found on disk")
-            self.multi_position_list = list(
-                np.ones(len(self.SCS_ID_list)) * ENCODER_CENTER
-            )
-            # create new file
+        """Restore encoder positions from disk into multi_position_list.
+
+        refresh() has already centered multi_position_list, so every early-out
+        here just persists that centered default; only a valid state file whose
+        length matches the connected servos replaces it. A servo-ID mismatch is
+        warned about but still trusted (the channel map is the same length).
+        """
+        if not self.file.exists():
+            logging.info("No position data found on disk; centering.")
             self.save()
+            return
+        try:
+            dct = json.loads(self.file.read_text())
+            positions = dct["position"]
+        except Exception as e:
+            logging.error("Error loading position from disk: %s; centering instead.", e)
+            self.save()
+            return
+        # Stale-state guard: the channel map changed since this was saved.
+        if len(positions) != len(self.SCS_ID_list):
+            logging.warning(
+                "Saved state has %d positions but %d servos are connected; "
+                "ignoring stale file and centering.",
+                len(positions),
+                len(self.SCS_ID_list),
+            )
+            self.save()
+            return
+        saved_ids = dct.get("servo_ids")
+        if saved_ids is not None and list(saved_ids) != list(self.SCS_ID_list):
+            logging.warning(
+                "Saved servo IDs %s differ from connected %s; positions may be stale.",
+                saved_ids,
+                self.SCS_ID_list,
+            )
+        self.multi_position_list = positions
+        angles = self.position_to_angle(positions)
+        logging.info(
+            "Loaded positions:\n%s",
+            "".join(
+                "{}{:.4f} deg\t".format(self.servo_list[i].message, angles[i])
+                for i in range(len(positions))
+            ),
+        )
 
     # def __del__(self):
     #     # also save when object is destroyed
@@ -397,26 +388,18 @@ class Servoset:
         self.multi_position_list = [ENCODER_CENTER] * len(self.SCS_ID_list)
         self.save()
 
-    def set_torque(self, i, on):
-        # Per-servo torque toggle (by channel index), keeping the cached
-        # multi_torque_list in sync. The single-servo counterpart of the
-        # mask-based torques_enable/torques_disable -- the monitor TUI uses this
-        # instead of reaching into servo_list[i] directly, so every torque write
-        # goes through Servoset and the cache stays authoritative.
-        (self.servo_list[i].torque_enable if on else self.servo_list[i].torque_disable)()
-        self.multi_torque_list[i] = bool(on)
-
-    def torques_enable(self, mask=None):
+    def set_torque(self, state, pos_mask=None):
+        # Enable (state truthy) or disable torque on the masked servos, keeping
+        # the cached multi_torque_list authoritative. pos_mask is an 8-element
+        # 0/1 list selecting channels (None = all), the same language as
+        # set_position/set_angle; the monitor TUI passes a single-servo mask to
+        # toggle one motor. Every torque write goes through here, so the cache
+        # stays the single source of truth.
+        state = bool(state)
         for i, servo in enumerate(self.servo_list):
-            if mask is None or mask[i]:
-                servo.torque_enable()
-                self.multi_torque_list[i] = True
-
-    def torques_disable(self, mask=None):
-        for i, servo in enumerate(self.servo_list):
-            if mask is None or mask[i]:
-                servo.torque_disable()
-                self.multi_torque_list[i] = False
+            if pos_mask is None or pos_mask[i]:
+                (servo.torque_enable if state else servo.torque_disable)()
+                self.multi_torque_list[i] = state
 
     def home(self):
         logging.info("going home")
@@ -530,19 +513,25 @@ class Servoset:
     def get_torque(self):
         # Query the torque-enable register (40) of every servo in one sync-read
         # and return a list of bools (True = torque on). Cached in
-        # self.multi_torque_list. Unlike torques_enable(), this only reads --
-        # it never energises a motor.
+        # self.multi_torque_list. Unlike set_torque(), this only reads -- it
+        # never energises a motor.
         torque_raw = self.group_sync_read(
             self.groupSyncRead_torque, ADDR_STS_TORQUE_ENABLE, 1
         )
         self.multi_torque_list = [bool(t) for t in torque_raw]
         return list(self.multi_torque_list)
 
-    def moving_status(self):
-        sts_moving_status = self.group_sync_read(
+    def get_moving_status(self, pos_mask=None):
+        # Per-servo Moving flag (register 66): 1 == still moving, 0 == stopped.
+        # One sync-read of all servos; pos_mask (None = all, same language as
+        # set_position) zeroes the entries we don't care about so callers can
+        # sum() over just the masked servos.
+        status = self.group_sync_read(
             self.groupSyncRead_status, ADDR_STS_MOVING_STATUS, 1
         )
-        return sts_moving_status
+        if pos_mask is not None:
+            status = [s if pos_mask[i] else 0 for i, s in enumerate(status)]
+        return status
 
     def set_position(self, goal_position_list, pos_mask=None):
         self.get_position()
@@ -572,7 +561,7 @@ class Servoset:
                 de_hysterisis_mask[i] = 1
         #
         if (not self.de_hysterisis) or (np.sum(de_hysterisis_mask) == 0):
-            self._set_position(goal_position_list)
+            self._set_position(goal_position_list, pos_mask)
         else:
             # print(de_hysterisis_mask,goal_position_list)
             goal_position_list_deh = [
@@ -585,15 +574,18 @@ class Servoset:
                     goal_position_list_deh, goal_position_list
                 )
             )
-            self._set_position(goal_position_list_deh)
-            self._set_position(goal_position_list)
+            self._set_position(goal_position_list_deh, pos_mask)
+            self._set_position(goal_position_list, pos_mask)
 
-    def _move_finished(self, goal_position_list):
-        # Decide whether every servo has finished moving, per self.completion_mode.
+    def _move_finished(self, goal_position_list, pos_mask=None):
+        # Decide whether every *masked* servo has finished moving, per
+        # self.completion_mode. pos_mask (None = all) restricts the check to the
+        # servos this move actually commanded; the unmasked ones were told to
+        # hold position and should not gate completion.
         if self.completion_mode == "moving_register":
             # Servo's own Moving flag (register 66): 0 == stopped. Authoritative,
             # but costs one extra sync-read per poll.
-            return sum(self.moving_status()) == 0
+            return sum(self.get_moving_status(pos_mask)) == 0
         # "position_speed" (default): within MOVING_POSITION_THRESHOLD of goal AND
         # slowed to <= MOVING_SPEED_THRESHOLD. Requiring both avoids a false "done"
         # at move start (far from goal, speed still 0) and during overshoot (near
@@ -604,9 +596,10 @@ class Servoset:
             <= MOVING_POSITION_THRESHOLD
             and abs(self.multi_speed_list[index]) <= MOVING_SPEED_THRESHOLD
             for index in range(len(self.SCS_ID_list))
+            if pos_mask is None or pos_mask[index]
         )
 
-    def _set_position(self, goal_position_list):
+    def _set_position(self, goal_position_list, pos_mask=None):
         scs_goal_position = []
         for goal_position in goal_position_list:
             if goal_position >= 0:
@@ -660,7 +653,7 @@ class Servoset:
             if iteration % 100 == 0:
                 logging.debug(status_string)
 
-            all_stop_moving = self._move_finished(goal_position_list)
+            all_stop_moving = self._move_finished(goal_position_list, pos_mask)
             if all_stop_moving:
                 logging.debug(status_string)
                 break

@@ -21,7 +21,7 @@ class STSServer(Server):
 		super().__init__(name, port, message)
 		self.servo_channel_list = servo_channel_list
 		self.servos = servos
-		self.servos.torques_enable()
+		self.servos.set_torque(True)
 
 	def set_angle(self):
 		value_list = []
