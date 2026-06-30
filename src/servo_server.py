@@ -222,7 +222,7 @@ def servo_monitor_tui(servos, stdscr=None):
                     continue
                 try:
                     with _quiet():
-                        servos.servo_list[sel].set_zero()
+                        servos.set_zero_single(sel)
                     _status(f"servo {sel}: zero set at current position")
                 except Exception as e:
                     _status(f"servo {sel}: set-zero failed ({e})")

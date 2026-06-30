@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -23,10 +22,10 @@ from fit_gaussian import (
 )
 from motor_scan import motor_2d_scan
 from callback_functions import make_callback_func, intensity_adc
+from datastore import DataStore
 from config import (
     SERVER,
     SERVO_CHANNEL_LIST,
-    DATA_FOLDER,
     ACCEPT_FUNCTIONS,
     CLIP_SCAN,
     MASKS,
@@ -38,9 +37,8 @@ servos = Servoset(board_id=SERVER["board_id"], servo_channel_list=SERVO_CHANNEL_
 servos.de_hysterisis = False
 servos.torques_enable()
 
-# Output folder for scan results, under paths.data_folder (machine.yaml).
-FOLDER = os.path.join(DATA_FOLDER, CLIP_SCAN.get("output_subdir", "clip_scan")) + os.sep
-os.makedirs(FOLDER, exist_ok=True)
+# Run folder for scan results, under the data/ root (warns if it already exists).
+STORE = DataStore(CLIP_SCAN.get("output_subdir", "clip_scan"))
 # Minimum fitted intensity to accept a new zero point (clip_scan in calibration.yaml).
 I_meaningful = CLIP_SCAN.get("I_meaningful", 0.1)
 
@@ -79,8 +77,8 @@ def scan_and_analyze(
     scan_stop_time = time.time()
     posmaskstr = posmask2str(POS_MASK)
     fileName = "clip_{}_{}".format(posmaskstr, ITER_NUM)
-    np.savez(
-        "{}{}.npz".format(FOLDER, fileName),
+    STORE.save_npz(
+        fileName,
         X=X,
         Y=Y,
         Z=Z,
@@ -143,7 +141,7 @@ def scan_and_analyze(
                 fileName, mu[0], mu[1], sigmas[0], sigmas[1]
             )
         )
-        plt.savefig("{}{}.png".format(FOLDER, fileName), dpi=300, bbox_inches="tight")
+        STORE.save_fig(fileName, dpi=300, bbox_inches="tight")
         #
     #
     elif plot_type == 1:
@@ -163,7 +161,7 @@ def scan_and_analyze(
                 fileName, mu[0], mu[1], sigmas[0], sigmas[1]
             )
         )
-        plt.savefig("{}{}.png".format(FOLDER, fileName), dpi=300, bbox_inches="tight")
+        STORE.save_fig(fileName, dpi=300, bbox_inches="tight")
 
     #
     cf(list(mu))
@@ -180,8 +178,8 @@ def scan_and_analyze(
     else:
         logging.info("I too small, not setting zero point")
         zero_new = zero
-    np.savez(
-        "{}{}_popt.npz".format(FOLDER, fileName),
+    STORE.save_npz(
+        fileName + "_popt",
         popt=popt,
         mu=mu,
         cov=cov,
@@ -196,7 +194,7 @@ def scan_and_analyze(
 if __name__ == "__main__":
     zero = np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=float)
     # fileName = "clip_A_Y_YDOT_3"
-    # d = np.load("{}{}_popt.npz".format(FOLDER,fileName))
+    # d = STORE.load_npz(fileName + "_popt")
     # zero = d['zero']
     # print(zero)
     cf0 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"], zero=zero)

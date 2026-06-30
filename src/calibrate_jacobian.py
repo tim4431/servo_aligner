@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -15,7 +14,8 @@ from servodriver import Servoset
 from servo_util import compose_para
 from optimize import fiber_coupling
 from callback_functions import make_callback_func, intensity_adc
-from config import (SERVER, SERVO_CHANNEL_LIST, DATA_FOLDER, COUPLING_VECTORS, JACOBIAN,
+from datastore import DataStore, resolve_under_data
+from config import (SERVER, SERVO_CHANNEL_LIST, COUPLING_VECTORS, JACOBIAN,
                     MASKS, knob_mask)
 
 servos = Servoset(board_id=SERVER["board_id"],servo_channel_list=SERVO_CHANNEL_LIST)
@@ -57,7 +57,7 @@ def load_assumed_jac(path):
     """
     if path is None:
         return None, None
-    d = np.load(path, allow_pickle=True)
+    d = np.load(resolve_under_data(path), allow_pickle=True)
     jac = np.array(d['jac'])
     jac_x0 = np.array(d['x0']) if 'x0' in d else None
     return jac, jac_x0
@@ -79,18 +79,19 @@ normd = JACOBIAN.get("normd", 20)
 offset_type = 'zero' # 'pm' or 'rand' or 'lin' or 'zero'
 MASTER = "B"  # A=upper path, B=lower path; per-stage knobs optimize the slave path
 SLAVE = "A" if MASTER == "B" else "B"
-# Output folder for Jacobian data, under paths.data_folder (machine.yaml).
-JAC_FOLDER = os.path.join(DATA_FOLDER, JACOBIAN.get("output_subdir", "jacobian"))
+
+# Only the pm/rand/lin probe modes accumulate a {offset: [(zero, I), ...]} dataset.
+# Set up its run folder + dataset file once (warns if the folder already exists).
+COLLECT = offset_type in ['pm', 'rand', 'lin']
+if COLLECT:
+    jac_store = DataStore(JACOBIAN.get("output_subdir", "jacobian"))
+    ds_name = 'jacobian_{:s}_{:d}'.format(offset_type, normd)
+    if not jac_store.exists(ds_name, ".npy"):
+        jac_store.save_npy(ds_name, defaultdict(list))
 #
 for i in range(N):
-    if offset_type in ['pm','rand','lin']:
-        os.makedirs(JAC_FOLDER, exist_ok=True)
-        filename=os.path.join(JAC_FOLDER, 'jacobian_{:s}_{:d}.npy'.format(offset_type,normd))
-        if not os.path.exists(filename):
-            dataset = defaultdict(list)
-            np.save(filename,dataset)
-        dataset = np.load(filename,allow_pickle=True)
-        dataset = dataset.item()
+    if COLLECT:
+        dataset = jac_store.load_npy(ds_name).item()
         # print(dataset)
 
     zero = np.array([0,0,0,0,0,0,0,0],dtype=float)
@@ -124,10 +125,10 @@ for i in range(N):
         zero, I = fiber_coupling(servos, callback_func, zero, path=SLAVE)
         print(I)
         #
-        if offset_type in ['pm','rand','lin']:
+        if COLLECT:
             dataset[tuple(offset)].append((list(zero),I))
             # print(dataset)
-            np.save(filename,dataset)
+            jac_store.save_npy(ds_name, dataset)
         print("i=",i)
 
     except Exception as e:
