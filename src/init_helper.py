@@ -52,7 +52,7 @@ from pathlib import Path
 from tui import (
     curses, tui_available, _quiet, _init_theme, _status, _flash_status,
     _it_action, _it_run, _it_toggle, _it_edit, _to_int, _tui_page, _tui_message,
-    _tui_input,
+    _tui_input, _tui_input_int, _tui_confirm,
 )
 
 # --- YAML backend ------------------------------------------------------------
@@ -1109,7 +1109,8 @@ def servo_config_tui(stdscr, config_dir, scan_max):
         _status(f"found {len(cache['found'])} servo(s): {cache['found'] or 'none'}")
 
     def build():
-        items = [_it_action("Rescan bus", "rescan")]
+        items = [_it_action("Rescan bus", "rescan"),
+                 _it_action("Add a new servo  (park existing at +100, add one, restore)", "add")]
         for sid in cache["found"]:
             nm = _channel_name(channels, sid)
             phase = {PHASE_SINGLE_TURN: "single-turn",
@@ -1133,6 +1134,9 @@ def servo_config_tui(stdscr, config_dir, scan_max):
                 break
             if choice == "rescan":
                 rescan()
+            elif choice == "add":
+                _add_servo_tui(stdscr, bus, channels, scan_max, mark_dirty)
+                rescan()   # reflect the new servo (and restored ids) in the list
             elif isinstance(choice, tuple) and choice[0] == "servo":
                 _servo_submenu(stdscr, bus, choice[1], channels, mark_dirty)
                 rescan()   # reflect any id / feedback change back in the list
@@ -1147,6 +1151,131 @@ def servo_config_tui(stdscr, config_dir, scan_max):
 
 
 _PHASE_FMT = {PHASE_SINGLE_TURN: "108 (single-turn)", PHASE_MULTI_TURN: "124 (multi-turn)"}
+
+# A new FEETECH servo ships as id 1, which collides with the servos already on
+# the bus. To add one unambiguously we temporarily park every existing servo out
+# of the low id range by this offset, so the freshly connected servo is the only
+# thing responding down low.
+_ID_BUMP = 100
+
+
+def _smallest_free_id(taken, hi):
+    """Smallest id in 1..hi-1 that is not in ``taken`` (a set); None if all taken."""
+    for i in range(1, hi):
+        if i not in taken:
+            return i
+    return None
+
+
+def _add_servo_tui(stdscr, bus, channels, scan_max, mark_dirty):
+    """Guided 'add a new servo' flow.
+
+    A new servo ships as id 1 and can't be told apart from an existing id-1
+    servo. So: park every existing servo out of the way (id += _ID_BUMP), have
+    the user connect the new servo, scan the now-empty low range to find it, give
+    it a final id + name, then move the parked servos back down. The park is
+    always undone in a ``finally`` so a cancel/error can't strand the existing
+    servos at 100+; the new servo is forced onto a free id (never one of the
+    parked-down ids) so restoring can't collide.
+    """
+    with _quiet():
+        existing = sorted(bus.scan(range(1, scan_max + 1)))
+        # Exact target ids we'd park onto must be free, or the park would collide.
+        conflicts = [e + _ID_BUMP for e in existing if bus.ping(e + _ID_BUMP)]
+    if conflicts:
+        _tui_message(stdscr, [f"Parking targets already in use: {conflicts}.",
+                              "Resolve those ids before adding a servo."])
+        return
+    bad = [e for e in existing if e + _ID_BUMP > 252]
+    if bad:
+        _tui_message(stdscr, [f"Can't park ids {bad} (+{_ID_BUMP} exceeds the 252 id limit).",
+                              "Reassign them lower first."])
+        return
+
+    if existing and not _tui_confirm(
+        stdscr,
+        f"Add a servo? Parks {len(existing)} servo(s) at +{_ID_BUMP}, then restores them.",
+    ):
+        return
+
+    parked = []      # original ids successfully parked at id + _ID_BUMP
+    added = None     # final id of the newly configured servo, once assigned
+    try:
+        # 1. Park existing servos out of the low range.
+        for e in existing:
+            _flash_status(stdscr, f"parking id {e} -> {e + _ID_BUMP} ...")
+            with _quiet():
+                ok = (bus.write_eeprom1(e, ADDR_ID, e + _ID_BUMP, lock_id=e + _ID_BUMP)
+                      and bus.ping(e + _ID_BUMP))
+            if not ok:
+                _tui_message(stdscr, [f"Failed to park id {e} -> {e + _ID_BUMP}.",
+                                      "Aborting; parked servos will be restored."])
+                return
+            parked.append(e)
+
+        # 2. Wait for the user to physically connect the new servo.
+        lines = []
+        if parked:
+            lines += [f"Existing servos parked at ids {[e + _ID_BUMP for e in parked]}.", ""]
+        lines += ["Connect the NEW servo now (it ships as id 1) and power it.",
+                  "Then press any key to scan for it."]
+        _tui_message(stdscr, lines)
+
+        # 3. Scan the (now empty) low range for the newcomer.
+        _flash_status(stdscr, "scanning for the new servo ...")
+        with _quiet():
+            newfound = bus.scan(range(1, _ID_BUMP))
+        if not newfound:
+            _tui_message(stdscr, ["No new servo found in the low id range.",
+                                  "Check wiring/power. Parked servos will be restored."])
+            return
+        if len(newfound) > 1:
+            _tui_message(stdscr, [f"More than one servo in the low range: {newfound}.",
+                                  "Connect only ONE new servo at a time.",
+                                  "Parked servos will be restored; try again."])
+            return
+        newcur = newfound[0]
+
+        # 4. Give the new servo a final id (never a parked-down id, so restoring
+        #    can't collide) and a channel-map name.
+        default_id = _smallest_free_id(set(existing), _ID_BUMP) or newcur
+        while True:
+            new_id = _tui_input_int(stdscr, f"final id for the new servo (found at {newcur})",
+                                    default_id)
+            if not (1 <= new_id < _ID_BUMP):
+                _tui_message(stdscr, [f"id must be in 1..{_ID_BUMP - 1}."])
+                continue
+            if new_id in existing:
+                _tui_message(stdscr, [f"id {new_id} is a parked servo's id -- pick a free one.",
+                                      f"suggested free id: {default_id}"])
+                continue
+            break
+        if new_id != newcur:
+            with _quiet():
+                ok = bus.write_eeprom1(newcur, ADDR_ID, new_id, lock_id=new_id) and bus.ping(new_id)
+            if not ok:
+                _tui_message(stdscr, [f"Failed to set the new servo id {newcur} -> {new_id}.",
+                                      "Parked servos will be restored."])
+                return
+        name = _tui_input(stdscr, f"name for servo id {new_id}", _channel_name(channels, new_id))
+        _set_channel_name(channels, new_id, name)
+        mark_dirty()
+        added = new_id
+        _status(f"added servo id {new_id}" + (f" ({name})" if name else ""))
+    finally:
+        # 5. Always move the parked servos back down to their original ids.
+        for e in parked:
+            _flash_status(stdscr, f"restoring id {e + _ID_BUMP} -> {e} ...")
+            with _quiet():
+                ok = (bus.write_eeprom1(e + _ID_BUMP, ADDR_ID, e, lock_id=e)
+                      and bus.ping(e))
+            if not ok:
+                _status(f"WARNING: could not restore id {e + _ID_BUMP} -> {e} -- fix it manually")
+
+    # 6. With every servo back in place, open the new one for full configuration
+    #    (name / feedback / angle limits / jog).
+    if added is not None:
+        _servo_submenu(stdscr, bus, added, channels, mark_dirty)
 
 
 def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
