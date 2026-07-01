@@ -22,13 +22,15 @@ from config import SERVER, SERVO_CHANNEL_LIST, sts3032_dict
 from servodriver import Servoset
 from tui import (
     curses, tui_available, _init_theme, _safe_addstr, _attr_normal, _attr_select,
-    _status, _draw_status, _flash_status, _NumberEditor, _quiet,
+    _status, _flash_status, _NumberEditor, _quiet,
     _it_action, _it_run, _tui_page, _tui_confirm, _tui_message,
+    _log_enable, _log_disable, _log_handle_key, _content_dims, _draw_chrome,
 )
 
-# Ring buffer of the ZMQ server's log/print lines, shown on the ZMQ page. While
-# the control panel is up, stdout/stderr and logging are redirected here so the
-# server's output never lands on the curses screen.
+# Ring buffer of all log/print output. While the control panel is up, stdout,
+# stderr and logging are redirected here so output never lands on the curses
+# screen; instead it streams into the shared bottom log pane shown on every page
+# (see tui._log_enable / _draw_chrome).
 _LOG_BUF = collections.deque(maxlen=1000)
 
 
@@ -103,6 +105,7 @@ def servo_monitor_tui(servos, stdscr=None):
     def draw(stdscr, sel, col, edit_text=None):
         stdscr.erase()
         h, _w = stdscr.getmaxyx()
+        rows, _cols = _content_dims(stdscr)   # leave room for the shared log pane
         _safe_addstr(stdscr, 0, 1, "Servo monitor", _attr_normal() | curses.A_BOLD)
         _safe_addstr(stdscr, 1, 1, f"board {servos.board_id}    {n} servo(s)",
                      _attr_normal() | curses.A_DIM)
@@ -110,6 +113,8 @@ def servo_monitor_tui(servos, stdscr=None):
                   f"{'angle(deg)':>13}  {'load':>6}  {'torque':>9}")
         _safe_addstr(stdscr, 3, 3, header, _attr_normal() | curses.A_BOLD)
         for i in range(n):
+            if 4 + i >= rows:           # stop above a bottom log pane
+                break
             # ">" marks the selected servo row
             _safe_addstr(stdscr, 4 + i, 1, ">" if i == sel else " ", _attr_normal() | curses.A_BOLD)
             ang = field_text(i, "angle", edit_text if (i == sel and EDITABLE_FIELD[col] == "angle") else None)
@@ -127,9 +132,8 @@ def servo_monitor_tui(servos, stdscr=None):
                 _safe_addstr(stdscr, 4 + i, x, text, _attr_select() if active else _attr_normal())
                 x += len(text)
         foot = ("left/right or type to change - Enter confirm - Esc cancel" if edit_text is not None
-                else "up/down servo - left/right field - Enter edit - q quit")
-        _safe_addstr(stdscr, h - 2, 1, foot, _attr_normal() | curses.A_DIM)
-        _draw_status(stdscr)
+                else "up/down servo - left/right field - Enter edit - l log - q quit")
+        _draw_chrome(stdscr, foot)   # footer + status, then the log pane below them
         stdscr.refresh()
 
     def set_torque(i, on):
@@ -188,6 +192,8 @@ def servo_monitor_tui(servos, stdscr=None):
             c = stdscr.getch()
             if c == -1:
                 continue   # timer tick: just refresh the table
+            if _log_handle_key(stdscr, c):
+                continue   # log pane took the key (focus / move / scroll)
             if c in (curses.KEY_UP, ord("k")):
                 sel = (sel - 1) % n
             elif c in (curses.KEY_DOWN, ord("j")):
@@ -245,7 +251,7 @@ class ZmqController:
         from zmq_server import STSServer   # lazy: needs the expctl framework
         # ServerClass installs a coloredlogs handler on its own logger at import;
         # drop it and let records propagate to root (which the panel captures into
-        # _LOG_BUF), so server logs reach the log page, not the screen.
+        # _LOG_BUF), so server logs reach the log pane, not the screen.
         sc_logger = logging.getLogger("ServerClass")
         sc_logger.handlers = []
         sc_logger.propagate = True
@@ -267,11 +273,11 @@ class ZmqController:
 
 
 def zmq_page(stdscr, zmq):
-    """The ZMQ server's own page: start/stop it and watch its log at the bottom.
+    """The ZMQ server's own page: start/stop it. Its log output streams into the
+    shared bottom log pane (same as every page) -- press 'l' to focus and scroll it.
 
     The server runs in a background thread, so leaving this page (Back / q) keeps
-    it running -- come back any time and it's still here, with its log. Refreshes
-    on a timer so the log stays live.
+    it running. Refreshes on a timer so the live values stay current.
     """
     stdscr.timeout(500)
     sel = 0
@@ -287,18 +293,13 @@ def zmq_page(stdscr, zmq):
             for i, a in enumerate(actions):
                 _safe_addstr(stdscr, 3 + i, 1, ">" if i == sel else " ", _attr_normal() | curses.A_BOLD)
                 _safe_addstr(stdscr, 3 + i, 3, a, _attr_select() if i == sel else _attr_normal())
-            _safe_addstr(stdscr, 6, 1, "--- server log ---", _attr_normal() | curses.A_BOLD)
-            top = 7
-            avail = max(0, (h - 2) - top)
-            for j, line in enumerate(list(_LOG_BUF)[-avail:] if avail else []):
-                _safe_addstr(stdscr, top + j, 1, line, _attr_normal())
-            _safe_addstr(stdscr, h - 2, 1, "up/down - Enter select - q back (server keeps running)",
-                         _attr_normal() | curses.A_DIM)
-            _draw_status(stdscr)
+            _draw_chrome(stdscr, "up/down - Enter select - l log - q back (server keeps running)")
             stdscr.refresh()
             c = stdscr.getch()
             if c == -1:
-                continue   # timer tick: refresh the log
+                continue   # timer tick: refresh live values
+            if _log_handle_key(stdscr, c):
+                continue   # log pane took the key (focus / move / scroll)
             if c in (curses.KEY_UP, ord("k")):
                 sel = (sel - 1) % len(actions)
             elif c in (curses.KEY_DOWN, ord("j")):
@@ -350,6 +351,7 @@ def objectives_page(stdscr, state):
         while True:
             stdscr.erase()
             h, _w = stdscr.getmaxyx()
+            rows, _cols = _content_dims(stdscr)   # leave room for the shared log pane
             _safe_addstr(stdscr, 0, 1, "Objective (callback) functions",
                          _attr_normal() | curses.A_BOLD)
             _safe_addstr(stdscr, 1, 1, "live sensor reads -- '*' marks the active objective",
@@ -357,6 +359,8 @@ def objectives_page(stdscr, state):
             _safe_addstr(stdscr, 3, 3, f"{'name':<22}  {'value':>14}",
                          _attr_normal() | curses.A_BOLD)
             for i, name in enumerate(names):
+                if 4 + i >= rows:           # stop above a bottom log pane
+                    break
                 val = read_objective(OBJECTIVES[name])
                 shown = "NaN" if val != val else f"{val:.4f}"   # val != val is True only for NaN
                 active = "*" if name == state.get("objective") else " "
@@ -364,13 +368,13 @@ def objectives_page(stdscr, state):
                              _attr_normal() | curses.A_BOLD)
                 _safe_addstr(stdscr, 4 + i, 3, f"{active} {name:<22}  {shown:>14}",
                              _attr_select() if i == sel else _attr_normal())
-            _safe_addstr(stdscr, h - 2, 1, "up/down move - Enter toggle active - q back",
-                         _attr_normal() | curses.A_DIM)
-            _draw_status(stdscr)
+            _draw_chrome(stdscr, "up/down move - Enter toggle active - l log - q back")
             stdscr.refresh()
             c = stdscr.getch()
             if c == -1:
                 continue   # timer tick: just re-read the values
+            if _log_handle_key(stdscr, c):
+                continue   # log pane took the key (focus / move / scroll)
             if c in (curses.KEY_UP, ord("k")):
                 sel = (sel - 1) % len(names)
             elif c in (curses.KEY_DOWN, ord("j")):
@@ -391,16 +395,20 @@ def objectives_page(stdscr, state):
 
 
 def control_panel(servos):
-    """Interactive control panel: the ZMQ server page (run it in the background +
-    watch its log), the live servo monitor, and the manual controls. The server
-    and the console share one ``Servoset``, whose bus lock serialises access, so
-    the monitor / manual controls work even while the server is running."""
+    """Interactive control panel: the ZMQ server page (run it in the background),
+    the live servo monitor, and the manual controls. A shared log pane is docked at
+    the bottom of every page (press 'l' to focus and scroll it). The server and the
+    console share one ``Servoset``, whose bus lock serialises access, so the
+    monitor / manual controls work even while the server is running."""
     zmq = ZmqController(servos)
     state = {"objective": None}   # active objective function, selected on its page
 
     def panel(stdscr):
         curses.curs_set(0)
         _init_theme(stdscr)
+        # Pin the captured server/print/log output as a live, scrollable pane at
+        # the bottom of the panel; 'l' moves focus into it to scroll back.
+        _log_enable(_LOG_BUF, height=8, title="server log")
 
         # Actions run in place (via _it_run) so the cursor keeps its position;
         # only "Quit" / q exits the page.
@@ -459,10 +467,11 @@ def control_panel(servos):
         _tui_page(
             stdscr, "Servo server", build,
             subtitle=f"board {SERVER['board_id']}  {len(servos.servo_list)} servo(s)  zmq port {SERVER['port']}",
-            footer="up/down move - Enter select - q quit")
+            footer="up/down move - Enter select - l log - q quit")
+        _log_disable()
         zmq.stop()   # don't leave the server thread running after the panel exits
 
-    # Capture the server's logs/prints into _LOG_BUF (shown on the ZMQ page) and
+    # Capture the server's logs/prints into _LOG_BUF (shown in the log pane) and
     # keep them off the curses screen: redirect stdout/stderr to the buffer and
     # route root logging there. Handlers created later (the lazy zmq_server
     # import) bind to the redirected stderr, so they're captured too.

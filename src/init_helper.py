@@ -13,7 +13,9 @@ in order). The individual options are:
 * **calibration.yaml** -- same, for the optics / optimizer-tuning values.
 * **Servo bus** -- the register steps doc/motor.md otherwise asks you to do by
   hand in FEETECH's FD tool: assign a unique bus **ID** to a servo (factory
-  default is 1) and enable hardware multi-turn feedback (**Register 18 -> 124**).
+  default is 1), enable hardware multi-turn feedback (**Register 18 -> 124**)
+  and set the min/max angle limits (**Registers 9 & 11**, 0..4095; both 0
+  disables the travel limit for multi-turn absolute positioning).
 * **Scan the bus** -- just list the servo IDs currently responding.
 * **Identify a servo** -- briefly jog one selected servo back and forth so you
   can see which physical motor a given id is.
@@ -30,7 +32,7 @@ This module talks to the bus directly via ``scservo_sdk``; it deliberately does
 NOT import ``servodriver``/``config``, so it is safe to run before the YAML
 files exist. The only action that moves a servo is "Identify a servo", which
 jogs the one you pick and returns it to where it started; every other step only
-reads, or writes the ID / phase / EEPROM-lock registers.
+reads, or writes the ID / phase / angle-limit / EEPROM-lock registers.
 """
 
 import argparse
@@ -120,10 +122,18 @@ _resolve_yaml_backend()
 
 # --- STS control-table addresses used for first-time setup -------------------
 ADDR_ID = 5         # bus ID (EEPROM)
+ADDR_MIN_ANGLE = 9  # min angle limit (EEPROM, 2 bytes)
+ADDR_MAX_ANGLE = 11  # max angle limit (EEPROM, 2 bytes)
 ADDR_PHASE = 18     # phase setting / feedback mode (EEPROM)
 ADDR_TORQUE_ENABLE = 40  # RAM; 1 = hold. Used only by the "identify" jog.
 PHASE_SINGLE_TURN = 108  # factory default (single-turn feedback)
 PHASE_MULTI_TURN = 124   # 108 + BIT4 -> report full multi-turn angle
+# Valid range for the angle-limit registers (9 & 11): one encoder turn is
+# 0..4095. Setting both limits to 0 disables the travel limit, which the STS
+# memory table requires for multi-turn absolute position control (factory
+# default is 0 / 4095).
+ANGLE_LIMIT_LO = 0
+ANGLE_LIMIT_HI = 4095
 
 INTERACTIVE = sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -157,15 +167,20 @@ def ask_str(label, current):
     return raw if raw != "" else current
 
 
-def ask_int(label, current):
+def ask_int(label, current, lo=None, hi=None):
     while True:
         raw = _prompt(label, current)
         if raw == "":
             return current
         try:
-            return int(raw, 0)  # base 0 also accepts 0x.. / 0b..
+            val = int(raw, 0)  # base 0 also accepts 0x.. / 0b..
         except ValueError:
             print("    not an integer, try again")
+            continue
+        if (lo is not None and val < lo) or (hi is not None and val > hi):
+            print(f"    out of range ({lo}..{hi}), try again")
+            continue
+        return val
 
 
 def ask_float(label, current):
@@ -417,11 +432,23 @@ class Bus:
         val, comm, _ = self.ph.read1ByteTxRx(sid, addr)
         return val if comm == self.OK else None
 
+    def read2(self, sid, addr):
+        val, comm, _ = self.ph.read2ByteTxRx(sid, addr)
+        return val if comm == self.OK else None
+
     def write_eeprom1(self, sid, addr, value, lock_id=None):
         """Unlock EEPROM, write one byte, re-lock. ``lock_id`` defaults to ``sid``
         but must be the *new* id when the write changes the servo's own id."""
         self.ph.unLockEprom(sid)
         res, _ = self.ph.write1ByteTxRx(sid, addr, value)
+        self.ph.LockEprom(sid if lock_id is None else lock_id)
+        return res == self.OK
+
+    def write_eeprom2(self, sid, addr, value, lock_id=None):
+        """Unlock EEPROM, write one 2-byte word, re-lock. Used for the angle
+        limit registers (9 / 11), which are 2 bytes each."""
+        self.ph.unLockEprom(sid)
+        res, _ = self.ph.write2ByteTxRx(sid, addr, value)
         self.ph.LockEprom(sid if lock_id is None else lock_id)
         return res == self.OK
 
@@ -537,6 +564,48 @@ def setup_multiturn(bus, ids):
     )
 
 
+def setup_angle_limits(bus, ids):
+    """Set the min/max angle limit registers (9 & 11) on the given servos.
+
+    Both are plain integers in ``ANGLE_LIMIT_LO..ANGLE_LIMIT_HI`` (one encoder
+    turn, 0..4095). Setting both to 0 disables the hardware travel limit, which
+    the STS memory table requires for multi-turn absolute position control; the
+    factory default (0 / 4095) otherwise clamps every command into a single turn.
+    """
+    ids = sorted(set(ids))
+    if not ids:
+        print("  no servos to configure")
+        return
+    print("  current angle limits (min/max):")
+    for sid in ids:
+        lo, hi = bus.read2(sid, ADDR_MIN_ANGLE), bus.read2(sid, ADDR_MAX_ANGLE)
+        print(f"    id {sid}: {lo}/{hi}" if lo is not None else f"    id {sid}: no response")
+
+    new_lo = ask_int("min angle limit (register 9)", ANGLE_LIMIT_LO,
+                     lo=ANGLE_LIMIT_LO, hi=ANGLE_LIMIT_HI)
+    new_hi = ask_int("max angle limit (register 11)", ANGLE_LIMIT_LO,
+                     lo=ANGLE_LIMIT_LO, hi=ANGLE_LIMIT_HI)
+    if new_hi < new_lo:
+        print("    max limit is below min limit; nothing written")
+        return
+    print(f"  writing angle limits {new_lo}/{new_hi} on ids: {ids}")
+    for sid in ids:
+        lo, hi = bus.read2(sid, ADDR_MIN_ANGLE), bus.read2(sid, ADDR_MAX_ANGLE)
+        if lo is None or hi is None:
+            print(f"    id {sid}: not responding, skipped")
+            continue
+        if lo == new_lo and hi == new_hi:
+            print(f"    id {sid}: already {lo}/{hi}, ok")
+            continue
+        bus.write_eeprom2(sid, ADDR_MIN_ANGLE, new_lo)
+        bus.write_eeprom2(sid, ADDR_MAX_ANGLE, new_hi)
+        clo, chi = bus.read2(sid, ADDR_MIN_ANGLE), bus.read2(sid, ADDR_MAX_ANGLE)
+        if clo == new_lo and chi == new_hi:
+            print(f"    id {sid}: {lo}/{hi} -> {clo}/{chi}  ✓")
+        else:
+            print(f"    id {sid}: write failed (reads {clo}/{chi})")
+
+
 def register_setup(devices, baudrate, channels, id_max):
     bus = Bus.open(devices, baudrate)
     if bus is None:
@@ -551,25 +620,33 @@ def register_setup(devices, baudrate, channels, id_max):
             found = bus.scan(range(1, id_max + 1))
             print(f"  servos now on the bus: {found if found else 'none'}")
 
-        # Read Register 18 first so you can see which servos still need it set.
+        # Read Register 18 and the angle limits first so you can see which
+        # servos still need configuring.
         targets = found or [int(c["id"]) for c in channels]
         if targets:
             print(f"  current Register 18 ({PHASE_SINGLE_TURN}=single-turn, "
-                  f"{PHASE_MULTI_TURN}=multi-turn):")
+                  f"{PHASE_MULTI_TURN}=multi-turn)  +  angle limits (registers 9/11):")
             for sid in targets:
                 cur = bus.read1(sid, ADDR_PHASE)
                 if cur is None:
                     print(f"    id {sid}: no response")
-                else:
-                    tag = {PHASE_MULTI_TURN: "  (multi-turn, already enabled)",
-                           PHASE_SINGLE_TURN: "  (single-turn)"}.get(cur, "")
-                    print(f"    id {sid}: {cur}{tag}")
+                    continue
+                tag = {PHASE_MULTI_TURN: "  (multi-turn, already enabled)",
+                       PHASE_SINGLE_TURN: "  (single-turn)"}.get(cur, "")
+                lo, hi = bus.read2(sid, ADDR_MIN_ANGLE), bus.read2(sid, ADDR_MAX_ANGLE)
+                print(f"    id {sid}: {cur}{tag}    limits {lo}/{hi}")
 
         if confirm(
             "enable hardware multi-turn (Register 18 -> 124) on the servos?",
             default=True,
         ):
             setup_multiturn(bus, targets)
+
+        if confirm(
+            "set the min/max angle limits (Registers 9 & 11)?",
+            default=True,
+        ):
+            setup_angle_limits(bus, targets)
     finally:
         bus.close()
 
@@ -881,7 +958,7 @@ def do_calibration(config_dir):
 
 
 def do_bus(config_dir, scan_max, args):
-    section("servo bus  -- ids & multi-turn (Register 18)")
+    section("servo bus  -- ids, multi-turn (Reg 18) & angle limits (Reg 9/11)")
     if args.no_bus:
         print("  --no-bus given; skipping bus / register setup")
         return
@@ -1113,6 +1190,15 @@ def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
             mark_dirty()
             _status(f"id {cur} name -> '{new}'  (saves on exit)")
 
+    def set_limit(addr, name):
+        def f(new):
+            cur = state["cur"]
+            with _quiet():
+                bus.write_eeprom2(cur, addr, new)
+                chk = bus.read2(cur, addr)
+            _status(f"id {cur} {name} angle limit -> {chk}" + ("" if chk == new else "  WRITE FAILED"))
+        return f
+
     def jog():
         cur = state["cur"]
         _flash_status(stdscr, f"jogging id {cur} -- watch which motor moves ...")
@@ -1125,11 +1211,17 @@ def _servo_submenu(stdscr, bus, sid, channels, mark_dirty):
         name = _channel_name(channels, cur)
         with _quiet():
             ph = bus.read1(cur, ADDR_PHASE)
+            lo = bus.read2(cur, ADDR_MIN_ANGLE)
+            hi = bus.read2(cur, ADDR_MAX_ANGLE)
         return [
             _it_edit("Bus ID    : ", cur, set_id, step=1, lo=1, hi=252),
             _it_run(f"Name      : {name or '(unnamed)'}", change_name),
             _it_edit("Feedback  : ", ph if ph in _PHASE_FMT else PHASE_SINGLE_TURN, set_phase,
                      options=[PHASE_SINGLE_TURN, PHASE_MULTI_TURN], fmt=lambda v: _PHASE_FMT.get(v, str(v))),
+            _it_edit("Min limit : ", lo if lo is not None else 0, set_limit(ADDR_MIN_ANGLE, "min"),
+                     step=1, lo=ANGLE_LIMIT_LO, hi=ANGLE_LIMIT_HI),
+            _it_edit("Max limit : ", hi if hi is not None else 0, set_limit(ADDR_MAX_ANGLE, "max"),
+                     step=1, lo=ANGLE_LIMIT_LO, hi=ANGLE_LIMIT_HI),
             _it_run("Identify (jog this servo)", jog),
             _it_action("Back", "back"),
         ]
@@ -1472,7 +1564,7 @@ def run_menu(args, config_dir, scan_max):
          lambda: do_machine(config_dir, scan_max)),
         ("Create or edit calibration.yaml (optics / optimizer tuning)",
          lambda: do_calibration(config_dir)),
-        ("Servo bus: assign IDs & enable multi-turn (Register 18)",
+        ("Servo bus: assign IDs, multi-turn (Reg 18) & angle limits (Reg 9/11)",
          lambda: do_bus(config_dir, scan_max, args)),
         ("Scan the bus (list connected servo IDs)",
          lambda: do_scan_bus(config_dir, scan_max)),

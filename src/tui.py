@@ -1,5 +1,5 @@
 """A tiny curses TUI toolkit shared by the interactive tools (init_helper,
-servodriver).
+servo_server).
 
 Everything is built from one small "item language" so every screen looks and
 behaves the same:
@@ -10,7 +10,12 @@ behaves the same:
 
 ``_tui_page(stdscr, title, build, ...)`` renders such a list and drives it.
 A white-on-black theme, a persistent bottom status line and small input/message
-helpers round it out. This module is pure (no hardware, no project imports) and
+helpers round it out. An optional scrollable **log pane** (``_log_enable`` with a
+``deque`` of lines) is docked at the bottom of every page: a page calls
+``_content_dims`` to size its content above the pane, ``_draw_chrome`` to paint
+the footer + status + log, and ``_log_handle_key`` to give the log first crack at
+each key. ``l`` moves keyboard focus into the pane (up/down, PageUp/Down,
+Home/End scroll). This module is pure (no hardware, no project imports) and
 degrades gracefully when curses is unavailable (``curses is None``).
 """
 
@@ -61,7 +66,8 @@ def _attr_select():
     return curses.color_pair(2) if curses.has_colors() else curses.A_REVERSE
 
 
-# --- Status line: the bottom row always shows the last action's feedback -----
+# --- Status line: shows the last action's feedback, just above the log pane ---
+# (or on the bottom row when no log pane is shown -- see _status_row / _layout).
 _STATUS = {"text": ""}
 
 
@@ -70,14 +76,14 @@ def _status(msg):
 
 
 def _draw_status(stdscr):
-    h, _w = stdscr.getmaxyx()
+    y = _status_row(stdscr)
     try:
-        stdscr.move(h - 1, 0)
+        stdscr.move(y, 0)
         stdscr.clrtoeol()
     except curses.error:
         pass
     if _STATUS["text"]:
-        _safe_addstr(stdscr, h - 1, 1, _STATUS["text"], _attr_normal() | curses.A_BOLD)
+        _safe_addstr(stdscr, y, 1, _STATUS["text"], _attr_normal() | curses.A_BOLD)
 
 
 def _flash_status(stdscr, msg):
@@ -85,6 +91,171 @@ def _flash_status(stdscr, msg):
     _status(msg)
     _draw_status(stdscr)
     stdscr.refresh()
+
+
+# --- Log pane: one scrollable log window docked at the bottom of every page ----
+# A run pins a live log to the screen by handing _log_enable a deque of lines.
+# Then EVERY page draws it the same way: _content_dims(stdscr) gives the rows left
+# for the page's own content; the page draws within that, then calls
+# _draw_chrome(stdscr, footer) to lay down the footer + status + log, and in its
+# input loop lets _log_handle_key(stdscr, c) intercept keys first. The pane fills
+# the bottom rows; the footer (description) and status (info) lines sit just above
+# it. 'l' moves keyboard focus into the pane so arrows / PageUp/Down / Home/End
+# scroll the log. State is module-global, like _STATUS.
+_LOG = {
+    "buf": None,        # deque of log lines to show, or None -> pane hidden
+    "height": 8,        # desired number of log lines in the pane
+    "title": "log",     # shown in the pane's header bar
+    "focused": False,   # True while keystrokes scroll the log, not the page
+    "offset": 0,        # lines scrolled back from the newest (0 = pinned to newest)
+}
+
+
+def _log_enable(buf, height=8, title="log"):
+    """Show ``buf`` (a deque of strings) as the scrollable log pane on every page."""
+    _LOG.update(buf=buf, height=height, title=title, focused=False, offset=0)
+
+
+def _log_disable():
+    """Hide the log pane and release any keyboard focus it held."""
+    _LOG.update(buf=None, focused=False, offset=0)
+
+
+def _log_active():
+    return _LOG["buf"] is not None
+
+
+def _log_focused():
+    return _log_active() and _LOG["focused"]
+
+
+def _log_region(h):
+    """Bottom log pane on a screen ``h`` tall: ``(header_y, n_lines)``, or None when
+    off / too short. The pane fills the bottom rows; the footer and status line go
+    just above its header. Capped so the page above always keeps some rows."""
+    if not _log_active():
+        return None
+    n = min(_LOG["height"], max(3, (h - 8) // 2))
+    header_y = h - n - 1               # header row, then n lines reaching the last row
+    if header_y < 5:                   # need rows for content + footer + status above
+        return None
+    return header_y, n
+
+
+def _layout(h):
+    """Row layout for the shared bottom chrome: a dict with ``rows`` (content rows
+    the page may use), ``footer_y``, ``status_y`` and ``log`` (the ``_log_region``
+    tuple or None). With a log pane the footer/status sit just above it; otherwise
+    on the last two rows as before."""
+    region = _log_region(h)
+    if region:
+        header_y, _n = region
+        return {"rows": header_y - 2, "footer_y": header_y - 2,
+                "status_y": header_y - 1, "log": region}
+    return {"rows": h - 2, "footer_y": h - 2, "status_y": h - 1, "log": None}
+
+
+def _content_dims(stdscr):
+    """(rows, cols) a page may use for its own content, leaving room for the footer,
+    status line and bottom log pane. Every page sizes itself against this so the
+    log always lands in the same place."""
+    h, w = stdscr.getmaxyx()
+    return _layout(h)["rows"], w
+
+
+def _footer_row(stdscr):
+    return _layout(stdscr.getmaxyx()[0])["footer_y"]
+
+
+def _status_row(stdscr):
+    return _layout(stdscr.getmaxyx()[0])["status_y"]
+
+
+def _log_scroll(delta, page):
+    """Move the view by ``delta`` lines (+ = older / up, - = newer / down); ``page``
+    is the number of visible lines (so PageUp/Down move by a screenful)."""
+    if not _log_active():
+        return
+    max_off = max(0, len(_LOG["buf"]) - page)
+    _LOG["offset"] = max(0, min(max_off, _LOG["offset"] + delta))
+
+
+def _log_handle_key(stdscr, c):
+    """First crack at a key for any page. Returns True if the log consumed it (the
+    page should then ignore it). 'l' grabs focus; once focused, arrows / PageUp /
+    PageDown / Home / End scroll and 'l'/'q'/Esc release focus back to the page."""
+    if not _log_active():
+        return False
+    region = _log_region(stdscr.getmaxyx()[0])
+    page = region[1] if region else _LOG["height"]
+    if not _log_focused():
+        if c == ord("l"):
+            _LOG.update(focused=True, offset=0)
+            return True
+        return False
+    if c in (ord("l"), ord("q"), 27):
+        _LOG["focused"] = False
+    elif c in (curses.KEY_UP, ord("k")):
+        _log_scroll(+1, page)
+    elif c in (curses.KEY_DOWN, ord("j")):
+        _log_scroll(-1, page)
+    elif c == curses.KEY_PPAGE:
+        _log_scroll(+page, page)
+    elif c == curses.KEY_NPAGE:
+        _log_scroll(-page, page)
+    elif c == curses.KEY_HOME:
+        _log_scroll(+len(_LOG["buf"]), page)   # jump to the oldest line
+    elif c == curses.KEY_END:
+        _log_scroll(-len(_LOG["buf"]), page)   # back to the newest line
+    return True
+
+
+def _clear_eol(stdscr, y, x=0):
+    try:
+        stdscr.move(y, x)
+        stdscr.clrtoeol()
+    except curses.error:
+        pass
+
+
+def _log_window(region):
+    """The slice of log lines currently visible for ``region`` (newest at bottom)."""
+    n = region[1]
+    lines = list(_LOG["buf"])
+    end = len(lines) - _LOG["offset"]
+    start = max(0, end - n)
+    return lines[start:end]
+
+
+def _draw_log(stdscr):
+    """Draw the bottom log pane (header + the visible window of lines), if enabled
+    and it fits. Over-paints its rows so any content bleed is cleared."""
+    h, w = stdscr.getmaxyx()
+    region = _log_region(h)
+    if region is None:
+        return
+    header_y, _n = region
+    focused = _LOG["focused"]
+    hattr = (_attr_select() if focused else _attr_normal()) | curses.A_BOLD
+    hint = ("up/down scroll - PgUp/Dn page - l/q back" if focused
+            else "l to focus & scroll")
+    _clear_eol(stdscr, header_y)
+    bar = f"--- {_LOG['title']} ({hint}) ".ljust(max(0, w - 2), "-")
+    _safe_addstr(stdscr, header_y, 1, bar, hattr)
+    for j, line in enumerate(_log_window(region)):
+        _clear_eol(stdscr, header_y + 1 + j)
+        _safe_addstr(stdscr, header_y + 1 + j, 1, line, _attr_normal())
+
+
+def _draw_chrome(stdscr, footer):
+    """Lay down the bottom chrome every page shares: the footer (description) line,
+    the status (info) line, then the log pane below them. Call after the page has
+    drawn its own content."""
+    lay = _layout(stdscr.getmaxyx()[0])
+    _clear_eol(stdscr, lay["footer_y"])
+    _safe_addstr(stdscr, lay["footer_y"], 1, footer, _attr_normal() | curses.A_DIM)
+    _draw_status(stdscr)
+    _draw_log(stdscr)
 
 
 def _to_int(s):
@@ -188,10 +359,13 @@ def _render_page(stdscr, title, subtitle, items, sel, footer):
     if subtitle:
         _safe_addstr(stdscr, 1, 1, subtitle, _attr_normal() | curses.A_DIM)
         top = 3
+    # Size the menu to the area the log pane leaves free (rows for a bottom pane,
+    # cols for a right pane), so the log always lands in the same place.
+    rows, cols = _content_dims(stdscr)
     num_w = len(str(len(items) - 1)) if items else 1
     for i, item in enumerate(items):
         y = top + i
-        if y >= h - 2:
+        if y >= rows:
             break
         selected = i == sel
         # ">" marks the selected row, plus a highlight bar on the item itself
@@ -200,9 +374,8 @@ def _render_page(stdscr, title, subtitle, items, sel, footer):
         # Prefix every row with its index ("[0] ...") so it can be jumped to by
         # typing the number (see _tui_page); width-pad so multi-digit lists line up.
         label = f"[{i:>{num_w}}] {item['text']}"
-        _safe_addstr(stdscr, y, 3, f"{label:<{max(0, w - 5)}}", attr)
-    _safe_addstr(stdscr, h - 2, 1, footer, _attr_normal() | curses.A_DIM)
-    _draw_status(stdscr)
+        _safe_addstr(stdscr, y, 3, f"{label:<{max(0, cols - 5)}}", attr)
+    _draw_chrome(stdscr, footer)   # footer + status, then the log pane below them
     stdscr.refresh()
 
 
@@ -235,14 +408,19 @@ def _tui_page(stdscr, title, build, subtitle=None,
                 _render_page(stdscr, t, sub, shown, sel, edit_footer)
             else:
                 _render_page(stdscr, t, sub, items, sel, footer)
-            # While a jump number is pending, time out so it clears if the user
-            # stops typing; otherwise block waiting for a key as usual.
-            stdscr.timeout(600 if jump else -1)
+            # Time out (so the loop redraws) while a jump number is pending OR the
+            # log pane is shown -- the latter keeps the streamed log live without a
+            # keypress. Otherwise block waiting for a key as usual.
+            stdscr.timeout(600 if (jump or _log_active()) else -1)
             c = stdscr.getch()
-            if c == -1:            # getch timed out -> the pending jump expired
+            if c == -1:            # timed out -> clear any pending jump, redraw
                 jump = ""
                 continue
             item = items[sel]
+            # The log pane gets first crack at the key: 'l' focus, 'L' move it,
+            # and while focused the scroll keys drive the log, not the menu.
+            if ed is None and _log_handle_key(stdscr, c):
+                continue
             if ed is not None:
                 res = ed.handle(c)
                 if res == "commit":
@@ -313,11 +491,8 @@ def _tui_message(stdscr, lines, wait=True):
     stdscr.erase()
     for i, ln in enumerate(lines):
         _safe_addstr(stdscr, 1 + i, 2, ln, _attr_normal())
-    h, _w = stdscr.getmaxyx()
-    if wait:
-        _safe_addstr(stdscr, h - 2, 1, "Press any key to continue ...",
-                     _attr_normal() | curses.A_DIM)
-    _draw_status(stdscr)
+    # footer + status + log pane below the message (the log pane stays visible)
+    _draw_chrome(stdscr, "Press any key to continue ..." if wait else "")
     stdscr.refresh()
     if wait:
         stdscr.getch()
