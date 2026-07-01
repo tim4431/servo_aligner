@@ -61,7 +61,55 @@ def _servo_name(servos, i):
     return sts3032_dict[servos.servo_channel_list[i]][1]
 
 
-def servo_monitor_tui(servos, stdscr=None):
+def _fmt_objective(val):
+    """Format an objective reading for display: ``-`` when unset, ``NaN`` for a
+    failed/absent read, else 4 decimals (``val != val`` is True only for NaN)."""
+    if val is None:
+        return "-"
+    return "NaN" if val != val else f"{val:.4f}"
+
+
+def _current_pose(servos):
+    """Current full-length angle vector (degrees), or ``None`` if the read fails.
+
+    Feeds pose-dependent objectives (``dummy_gaussian``) their live pose on pages
+    that don't otherwise read the servos. Wrapped in ``_quiet()`` so any helper
+    prints can't corrupt the curses screen; returns ``None`` on a bus error so the
+    caller falls back to a pose-free read.
+    """
+    try:
+        with _quiet():
+            return list(servos.position_to_angle(servos.get_position()))
+    except Exception:
+        return None
+
+
+def _read_active_objective(state, para_nr_move=None):
+    """Live value of the active objective (``state['objective']``).
+
+    ``para_nr_move`` (the current full-length angle vector) is forwarded to the
+    objective, so pose-dependent objectives -- e.g. ``dummy_gaussian`` -- track the
+    live pose; pass it where a pose is on hand (the servo monitor), or leave it
+    ``None`` (objectives that read a real sensor ignore it, and ``dummy_gaussian``
+    then evaluates at the origin).
+
+    Returns ``None`` when no objective is selected, or ``float('nan')`` when
+    ``callback_functions`` (or its ADC) is unavailable or the read fails -- so the
+    value can be shown on any page without crashing on a machine that lacks the
+    hardware. ``callback_functions`` is imported lazily because it pulls in the
+    I2C ADC libraries.
+    """
+    name = state.get("objective") if state else None
+    if not name:
+        return None
+    try:
+        from callback_functions import OBJECTIVES, read_objective
+        return read_objective(OBJECTIVES[name], para_nr_move=para_nr_move)
+    except Exception:
+        return float("nan")
+
+
+def servo_monitor_tui(servos, stdscr=None, state=None):
     """Live curses table of every servo's position / angle / load / torque.
 
     The table refreshes on a timer (~0.6 s) so the values stay live. Two-axis
@@ -72,10 +120,13 @@ def servo_monitor_tui(servos, stdscr=None):
     't' is a quick torque toggle, 'q' quits.
 
     Pass ``stdscr`` to run inside an existing curses session (the control panel);
-    otherwise it opens its own ``curses.wrapper``.
+    otherwise it opens its own ``curses.wrapper``. ``state`` is the control panel's
+    shared state dict -- when given, the chosen objective (callback) function and
+    its live value are shown above the table.
     """
     n = len(servos.servo_list)
     data = {"pos": [0] * n, "ang": [0.0] * n, "load": [0] * n, "torque": [False] * n}
+    obj = {"name": None, "val": None}   # active objective + its last live reading
     # Query the real torque state up front (refresh() no longer force-enables it).
     try:
         data["torque"] = list(servos.get_torque())
@@ -94,6 +145,12 @@ def servo_monitor_tui(servos, stdscr=None):
                 data["torque"] = list(servos.get_torque())
         except Exception as e:
             _status(f"read error: {e}")
+        # Objective read is independent of the servo serial bus (I2C ADC) and is
+        # NaN-safe, so keep it outside the try above; None when no state/objective.
+        # Pass the current pose so a pose-dependent objective (dummy_gaussian)
+        # tracks the servos live as they are jogged here.
+        obj["name"] = state.get("objective") if state else None
+        obj["val"] = _read_active_objective(state, para_nr_move=data["ang"])
 
     def field_text(i, field, editing):
         if editing is not None:
@@ -109,6 +166,10 @@ def servo_monitor_tui(servos, stdscr=None):
         _safe_addstr(stdscr, 0, 1, "Servo monitor", _attr_normal() | curses.A_BOLD)
         _safe_addstr(stdscr, 1, 1, f"board {servos.board_id}    {n} servo(s)",
                      _attr_normal() | curses.A_DIM)
+        if state is not None:
+            obj_line = (f"objective: {obj['name']} = {_fmt_objective(obj['val'])}"
+                        if obj["name"] else "objective: -  (none selected)")
+            _safe_addstr(stdscr, 2, 1, obj_line, _attr_normal() | curses.A_DIM)
         header = (f"{'idx':>3}  {'name':<8} {'id':>3}  {'position':>9}  "
                   f"{'angle(deg)':>13}  {'load':>6}  {'torque':>9}")
         _safe_addstr(stdscr, 3, 3, header, _attr_normal() | curses.A_BOLD)
@@ -323,15 +384,17 @@ def zmq_page(stdscr, zmq):
         stdscr.timeout(-1)
 
 
-def objectives_page(stdscr, state):
+def objectives_page(stdscr, state, servos):
     """List the objective (callback) functions with their live values; pick one.
 
     The objectives are ``callback_functions.OBJECTIVES`` -- the scalar signals the
     optimizers maximize (e.g. photodiode intensity over the ADC). Each value is
     read through ``read_objective``, which returns NaN if the hardware is absent
-    or a read fails, so a row shows "NaN" instead of crashing the panel. The
-    active objective (``state["objective"]``) is marked with "*"; Enter on a row
-    makes it active. Refreshes on a timer so the values stay live.
+    or a read fails, so a row shows "NaN" instead of crashing the panel. Each read
+    is passed the current servo pose (read once per refresh), so a pose-dependent
+    objective (``dummy_gaussian``) shows its value at the live pose. The active
+    objective (``state["objective"]``) is marked with "*"; Enter on a row makes it
+    active. Refreshes on a timer so the values stay live.
 
     ``callback_functions`` is imported lazily (it pulls in the I2C ADC libs), so
     the rest of the console still works if that import is unavailable.
@@ -358,10 +421,11 @@ def objectives_page(stdscr, state):
                          _attr_normal() | curses.A_DIM)
             _safe_addstr(stdscr, 3, 3, f"{'name':<22}  {'value':>14}",
                          _attr_normal() | curses.A_BOLD)
+            pose = _current_pose(servos)   # one bus read per refresh, shared by every row
             for i, name in enumerate(names):
                 if 4 + i >= rows:           # stop above a bottom log pane
                     break
-                val = read_objective(OBJECTIVES[name])
+                val = read_objective(OBJECTIVES[name], para_nr_move=pose)
                 shown = "NaN" if val != val else f"{val:.4f}"   # val != val is True only for NaN
                 active = "*" if name == state.get("objective") else " "
                 _safe_addstr(stdscr, 4 + i, 1, ">" if i == sel else " ",
@@ -417,14 +481,14 @@ def control_panel(servos):
             _init_theme(stdscr)
 
         def open_objectives():
-            objectives_page(stdscr, state)
+            objectives_page(stdscr, state, servos)
             _init_theme(stdscr)
 
         # The manual controls and the monitor work even while the server is
         # running -- Servoset serialises bus access with a lock, so the console
         # and the server thread share the one serial port safely.
         def run_monitor():
-            servo_monitor_tui(servos, stdscr)
+            servo_monitor_tui(servos, stdscr, state)
             _init_theme(stdscr)
 
         def do_home():
@@ -454,10 +518,15 @@ def control_panel(servos):
 
         def build():
             zmq_state = f"RUNNING (port {SERVER['port']})" if zmq.running() else "stopped"
+            if state["objective"]:
+                val = _read_active_objective(state, para_nr_move=_current_pose(servos))
+                obj_label = f"{state['objective']} = {_fmt_objective(val)}"
+            else:
+                obj_label = "-"
             return [
                 _it_run(f"ZMQ server: {zmq_state}   [open]", open_zmq),
                 _it_run("Servo monitor  (live table)", run_monitor),
-                _it_run(f"Objective: {state['objective'] or '-'}   [select]", open_objectives),
+                _it_run(f"Objective: {obj_label}   [select]", open_objectives),
                 _it_run("Home all servos (0 deg)", do_home),
                 _it_run("Set current pose as zero (all servos)", do_zero),
                 _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
