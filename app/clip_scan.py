@@ -9,6 +9,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+import _bootstrap  # noqa: F401 -- prepend ../src on sys.path for the library imports below
 from servodriver import Servoset
 from servo_util import nraddr
 from fit_gaussian import (

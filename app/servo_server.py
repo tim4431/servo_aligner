@@ -18,6 +18,7 @@ import logging
 import sys
 import threading
 
+import _bootstrap  # noqa: F401 -- prepend ../src on sys.path for the library imports below
 from config import SERVER, SERVO_CHANNEL_LIST, sts3032_dict
 from servodriver import Servoset
 from tui import (

@@ -48,6 +48,8 @@ import sys
 import time
 from pathlib import Path
 
+import _bootstrap  # noqa: F401 -- prepend ../src on sys.path (for the lazily-imported scservo_sdk)
+
 # Shared curses TUI toolkit (item language, theme, status line, input helpers).
 from tui import (
     curses, tui_available, _quiet, _init_theme, _status, _flash_status,

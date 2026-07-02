@@ -1,4 +1,6 @@
 import logging
+
+import _bootstrap  # noqa: F401 -- prepend ../src on sys.path for the library imports below
 from ServerClass import Server, logger
 from servodriver import Servoset
 from config import SERVER, SERVO_CHANNEL_LIST
