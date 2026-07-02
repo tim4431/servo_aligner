@@ -155,6 +155,9 @@ def pts_iterator(
 
         return (parabst, Tbst)
 
+    except OptimizationAborted:
+        # Deliberate user cancellation: propagate quietly (no error log/traceback).
+        raise
     except Exception:
         # Log with traceback, then propagate: returning None here would only
         # defer the failure to the caller's unpacking with a poorer message.

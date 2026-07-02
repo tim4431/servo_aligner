@@ -80,6 +80,48 @@ class _BufStream:
         return False
 
 
+class _OptControl:
+    """Cooperative pause / stop / revert control for a running optimization.
+
+    The optimizer worker calls :meth:`check` on every objective evaluation (via a
+    wrapper around the callback). ``check`` blocks the worker while the UI has
+    requested a pause and, once the user decides, either returns (resume) or
+    raises :class:`step_optimize.OptimizationAborted` so the run unwinds. The
+    optimizer can't be interrupted mid-iteration, so a pause takes effect at the
+    next evaluation. ``start_pose`` is the pre-optimization angle vector, kept so
+    the caller can revert to it.
+    """
+
+    def __init__(self, start_pose):
+        self.start_pose = list(start_pose)
+        self._resume = threading.Event()
+        self._resume.set()            # set == running; cleared == paused
+        self.paused = False
+        self.decision = None          # None -> keep going; "stop" / "revert" -> abort
+
+    def check(self):
+        """Worker-side gate: block while paused, raise to abort on stop/revert."""
+        if not self._resume.is_set():
+            self._resume.wait()
+        if self.decision in ("stop", "revert"):
+            from step_optimize import OptimizationAborted
+            raise OptimizationAborted(self.decision)
+
+    def request_pause(self):
+        self.paused = True
+        self._resume.clear()
+
+    def resume(self):
+        self.decision = None
+        self.paused = False
+        self._resume.set()
+
+    def abort(self, revert):
+        self.decision = "revert" if revert else "stop"
+        self.paused = False
+        self._resume.set()            # wake the worker so check() can raise
+
+
 def _servo_name(servos, i):
     return sts3032_dict[servos.servo_channel_list[i]][1]
 
@@ -105,7 +147,7 @@ def _optimize_line(state):
         label = state["opt_template"]
     else:
         label = "-  (press t to pick a template)"
-    suffix = "   [RUNNING ...]" if state.get("opt_running") else "   ('o' to run)"
+    suffix = "   [RUNNING ... 'o' to pause]" if state.get("opt_running") else "   ('o' to run)"
     return f"optimize: {label}{suffix}"
 
 
@@ -172,6 +214,8 @@ def servo_monitor_tui(servos, stdscr=None, state=None):
     * ``o`` runs the selected optimization on the active objective in a background
       thread, streaming its progress to the shared log pane while the table (and
       the '*' active-knob markers) stay live. Manual controls lock while it runs.
+      Pressing ``o`` again pauses the run and offers resume / stop-here / revert
+      to the pre-optimization pose (see :func:`_OptControl`).
     """
     n = len(servos.servo_list)
     data = {"pos": [0] * n, "ang": [0.0] * n, "load": [0] * n, "torque": [False] * n}
@@ -269,7 +313,7 @@ def servo_monitor_tui(servos, stdscr=None, state=None):
                 _safe_addstr(stdscr, y, x, text, _attr_select() if active else _attr_normal())
                 x += len(text)
         foot = ("left/right or type to change - Enter confirm - Esc cancel" if edit_text is not None
-                else "up/dn servo - l/r field - Enter edit - o run - t template - x knob - l log - q quit")
+                else "up/dn servo - l/r field - Enter edit - o run/pause - t template - x knob - l log - q quit")
         _draw_chrome(stdscr, foot)   # footer + status, then the log pane below them
         stdscr.refresh()
 
@@ -345,6 +389,14 @@ def servo_monitor_tui(servos, stdscr=None, state=None):
         callback_func = make_callback_func(servos, OBJECTIVES[objective])
         knob_names = [_servo_name(servos, j) for j, v in enumerate(mask) if v]
 
+        ctrl = _OptControl(zero)   # pause/stop/revert gate; zero is the pre-opt pose
+
+        def controlled(*a, **k):
+            # Called on every objective evaluation: honour a pause/stop/revert
+            # before actually moving the servos + reading the objective.
+            ctrl.check()
+            return callback_func(*a, **k)
+
         def on_stage(m, i, ntot):
             state["opt_active"] = list(m) if m is not None else None
 
@@ -362,31 +414,72 @@ def servo_monitor_tui(servos, stdscr=None, state=None):
                              (f"template {tmpl.name}" if tmpl else "custom L-BFGS-B"),
                              knob_names)
                 if tmpl is not None:
-                    _best, value = tmpl.run(servos, callback_func, zero, on_stage=on_stage)
+                    _best, value = tmpl.run(servos, controlled, zero, on_stage=on_stage)
                 else:
-                    _best, value = optimize_mask(servos, callback_func, zero, mask, on_stage=on_stage)
+                    _best, value = optimize_mask(servos, controlled, zero, mask, on_stage=on_stage)
                 logging.info("[optimize] finished: objective=%s value=%s", objective, value)
+            except step_optimize.OptimizationAborted as ab:
+                if ab.args and ab.args[0] == "revert":
+                    logging.info("[optimize] cancelled -- reverting to pre-optimization position")
+                    try:
+                        servos.set_angle(list(zero))
+                    except Exception:
+                        logging.exception("[optimize] revert move failed")
+                else:
+                    logging.info("[optimize] stopped at current position")
             except Exception:
                 logging.exception("[optimize] failed")
             finally:
                 step_optimize.BFGS_params = saved_bfgs
                 state["opt_active"] = None
                 state["opt_running"] = False
+                state["opt_ctrl"] = None
                 try:   # the optimizer makes (unused) figures per stage -- don't leak them
                     import matplotlib.pyplot as plt
                     plt.close("all")
                 except Exception:
                     pass
 
+        state["opt_ctrl"] = ctrl
         state["opt_running"] = True
         state["opt_active"] = None
-        _status("optimization started -- progress in the log pane ('l' to scroll)")
+        _status("optimization started -- 'o' to pause, progress in the log pane ('l')")
         # A daemon thread so the monitor keeps ticking; the Servoset's bus lock
         # serialises the optimizer's moves against the monitor's reads, exactly as
         # for the ZMQ server thread. matplotlib figures created deep in the
         # optimizer are only ever touched by this one worker (the TUI never uses
         # matplotlib) and the Pi is headless (Agg backend), so this stays safe.
         threading.Thread(target=worker, daemon=True).start()
+
+    def pause_menu(stdscr):
+        """Pressing 'o' while a run is in flight pauses it (at the next objective
+        evaluation) and offers: resume, stop at the current position, or revert to
+        the pre-optimization pose. q/Esc resumes (the safe default)."""
+        ctrl = state.get("opt_ctrl") if state else None
+        if ctrl is None:
+            return
+        ctrl.request_pause()
+        _status("pausing optimization at the next evaluation ...")
+        choice = _tui_page(
+            stdscr, "Optimization paused",
+            lambda: [
+                _it_action("Resume optimization", "resume"),
+                _it_action("Stop here (keep current position)", "stop"),
+                _it_action("Return to the pre-optimization position", "revert"),
+            ],
+            subtitle="the optimizer is holding; pick what to do",
+            footer="up/down move - Enter select - q resume")
+        if choice == "stop":
+            ctrl.abort(revert=False)
+            _status("stopping optimization (keeping current position)")
+        elif choice == "revert":
+            ctrl.abort(revert=True)
+            _status("stopping and reverting to the pre-optimization position")
+        else:   # "resume" or None (q/Esc)
+            ctrl.resume()
+            _status("optimization resumed")
+        _init_theme(stdscr)
+        stdscr.timeout(600)   # restore the refresh tick the menu page cleared
 
     def edit_field(stdscr, sel, col):
         if busy():
@@ -448,8 +541,11 @@ def servo_monitor_tui(servos, stdscr=None, state=None):
                 break
             elif c in (curses.KEY_ENTER, 10, 13):
                 edit_field(stdscr, sel, col)
-            elif c == ord("o"):               # run the selected optimization
-                run_optimization()
+            elif c == ord("o"):               # run, or pause a run in progress
+                if state is not None and state.get("opt_running"):
+                    pause_menu(stdscr)
+                else:
+                    run_optimization()
             elif c in (ord("t"), ord("T")) and state is not None:   # pick an optimization template
                 if not busy():
                     optimize_page(stdscr, state, servos)
@@ -737,8 +833,10 @@ def control_panel(servos):
     #   opt_manual   - True once knobs were hand-picked -> custom L-BFGS-B run
     #   opt_active   - channels being optimized *right now* (shown as '*'), or None
     #   opt_running  - True while the optimization thread is in flight
+    #   opt_ctrl     - _OptControl for the live run (pause/stop/revert), or None
     state = {"objective": None, "opt_template": None, "opt_mask": None,
-             "opt_manual": False, "opt_active": None, "opt_running": False}
+             "opt_manual": False, "opt_active": None, "opt_running": False,
+             "opt_ctrl": None}
 
     def panel(stdscr):
         curses.curs_set(0)
