@@ -18,9 +18,7 @@ The manual controls are also usable one-shot, e.g. for setup scripts::
     python app/servo_server.py set_single 3 12.5
 """
 
-import collections
 import logging
-import re
 import sys
 import threading
 
@@ -29,55 +27,50 @@ from config import SERVER, SERVO_CHANNEL_LIST, sts3032_dict
 from servodriver import Servoset
 from tui import (
     curses, tui_available, _init_theme, _safe_addstr, _attr_normal, _attr_select,
-    _status, _flash_status, _NumberEditor, _quiet,
+    _status, _flash_status, _NumberEditor, _quiet, LogBuffer,
     _it_action, _it_run, _tui_page, _tui_confirm, _tui_message,
     _log_enable, _log_disable, _log_handle_key, _content_dims, _draw_chrome,
 )
 
-# Ring buffer of all log/print output. While the control panel is up, stdout,
-# stderr and logging are redirected here so output never lands on the curses
-# screen; instead it streams into the shared bottom log pane shown on every page
-# (see tui._log_enable / _draw_chrome).
-_LOG_BUF = collections.deque(maxlen=1000)
+# Buffer of all log/print output. While the control panel is up, stdout, stderr
+# and logging are redirected here so output never lands on the curses screen;
+# instead it streams into the shared bottom log pane shown on every page (see
+# tui._log_enable / _draw_chrome). The LogBuffer sanitizes lines, colours log
+# records by level, and folds a tqdm progress bar into one live row.
+_LOG_BUF = LogBuffer(maxlen=1000)
 
 
-# The curses log pane can only render plain text, so strip anything that would
-# corrupt it before a captured line lands in the buffer: ANSI escape sequences
-# (e.g. coloredlogs colours) and other C0 control characters / carriage returns
-# (e.g. progress bars). Tabs are expanded to spaces separately.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+def _level_kind(levelno):
+    """Map a logging level to the log pane's colour ``kind`` (see tui._log_attr)."""
+    if levelno >= logging.ERROR:
+        return "error"
+    if levelno >= logging.WARNING:
+        return "warning"
+    if levelno >= logging.INFO:
+        return "info"
+    return "debug"
 
 
-def _sanitize_log_line(line):
-    return _CTRL_RE.sub("", _ANSI_RE.sub("", line).expandtabs()).rstrip()
-
-
-class _BufStream:
-    """File-like sink that splits writes into lines and appends them to a deque.
-
-    Each line is sanitized (:func:`_sanitize_log_line`) so escape sequences and
-    control characters can't corrupt the curses log pane it feeds.
-    """
+class _BufLogHandler(logging.Handler):
+    """Logging handler that appends formatted records to the :class:`LogBuffer`,
+    tagged with a colour ``kind`` from the record's level so the pane can colour
+    warnings / errors. Raw ``print`` / ``tqdm`` output goes in via the buffer's
+    file-like ``write`` (as plain text) instead, so only real log records are
+    coloured. Warnings and errors also get an explicit level prefix, since colour
+    alone is easy to miss."""
 
     def __init__(self, buf):
+        super().__init__()
         self.buf = buf
-        self._partial = ""
 
-    def write(self, s):
-        self._partial += s
-        while "\n" in self._partial:
-            line, self._partial = self._partial.split("\n", 1)
-            line = _sanitize_log_line(line)
-            if line:
-                self.buf.append(line)
-        return len(s)
-
-    def flush(self):
-        pass
-
-    def isatty(self):
-        return False
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if record.levelno >= logging.WARNING:
+                msg = f"{record.levelname}: {msg}"
+            self.buf.add(msg, _level_kind(record.levelno))
+        except Exception:
+            pass
 
 
 class _OptControl:
@@ -819,12 +812,53 @@ def optimize_page(stdscr, state, servos):
         stdscr.timeout(-1)
 
 
+def settings_page(stdscr, servos):
+    """Manual servo settings, grouped off the main menu to keep it short: home all
+    servos, set the current pose as zero (double-confirmed), and toggle
+    de-hysteresis. Each action runs in place; 'q'/Back returns to the main menu."""
+    def do_home():
+        _flash_status(stdscr, "homing all servos ...")
+        try:
+            with _quiet():
+                servos.home()
+            _status("homed all servos to 0 deg")
+        except Exception as e:
+            _status(f"home failed: {e}")
+
+    def do_zero():
+        if not _tui_confirm(stdscr, "Set the CURRENT pose as zero for ALL servos?", double=True):
+            _status("set-zero cancelled")
+            return
+        _flash_status(stdscr, "setting zero ...")
+        try:
+            with _quiet():
+                servos.set_zero()
+            _status("set current pose as zero for all servos")
+        except Exception as e:
+            _status(f"set-zero failed: {e}")
+
+    def do_dehys():
+        servos.de_hysterisis = not servos.de_hysterisis
+        _status(f"de-hysteresis turned {'on' if servos.de_hysterisis else 'off'}")
+
+    _tui_page(
+        stdscr, "Settings", lambda: [
+            _it_run("Home all servos (0 deg)", do_home),
+            _it_run("Set current pose as zero (all servos)", do_zero),
+            _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
+            _it_action("Back", "back"),
+        ],
+        subtitle="manual servo settings",
+        footer="up/down move - Enter select - l log - q back")
+
+
 def control_panel(servos):
     """Interactive control panel: the ZMQ server page (run it in the background),
-    the live servo monitor, and the manual controls. A shared log pane is docked at
-    the bottom of every page (press 'l' to focus and scroll it). The server and the
-    console share one ``Servoset``, whose bus lock serialises access, so the
-    monitor / manual controls work even while the server is running."""
+    the live servo monitor, the objective/optimize pages and a Settings page. A
+    shared log pane is docked at the bottom of every page (press 'l' to focus and
+    scroll it). The server and the console share one ``Servoset``, whose bus lock
+    serialises access, so the monitor / settings work even while the server is
+    running."""
     zmq = ZmqController(servos)
     # Shared panel state:
     #   objective    - active objective function (Objective page)
@@ -862,30 +896,9 @@ def control_panel(servos):
             servo_monitor_tui(servos, stdscr, state)
             _init_theme(stdscr)
 
-        def do_home():
-            _flash_status(stdscr, "homing all servos ...")
-            try:
-                with _quiet():
-                    servos.home()
-                _status("homed all servos to 0 deg")
-            except Exception as e:
-                _status(f"home failed: {e}")
-
-        def do_zero():
-            if not _tui_confirm(stdscr, "Set the CURRENT pose as zero for ALL servos?", double=True):
-                _status("set-zero cancelled")
-                return
-            _flash_status(stdscr, "setting zero ...")
-            try:
-                with _quiet():
-                    servos.set_zero()
-                _status("set current pose as zero for all servos")
-            except Exception as e:
-                _status(f"set-zero failed: {e}")
-
-        def do_dehys():
-            servos.de_hysterisis = not servos.de_hysterisis
-            _status(f"de-hysteresis turned {'on' if servos.de_hysterisis else 'off'}")
+        def open_settings():
+            settings_page(stdscr, servos)
+            _init_theme(stdscr)
 
         def build():
             zmq_state = f"RUNNING (port {SERVER['port']})" if zmq.running() else "stopped"
@@ -898,9 +911,8 @@ def control_panel(servos):
                 _it_run(f"ZMQ server: {zmq_state}   [open]", open_zmq),
                 _it_run("Servo monitor  (live table)", run_monitor),
                 _it_run(f"Objective: {obj_label}   [select]", open_objectives),
-                _it_run("Home all servos (0 deg)", do_home),
-                _it_run("Set current pose as zero (all servos)", do_zero),
-                _it_run(f"De-hysteresis: {'on' if servos.de_hysterisis else 'off'}   [toggle]", do_dehys),
+                _it_run(f"Settings  (home / set-zero / de-hysteresis: {'on' if servos.de_hysterisis else 'off'})   [open]",
+                        open_settings),
                 _it_action("Quit", "quit"),
             ]
 
@@ -918,10 +930,12 @@ def control_panel(servos):
     old_out, old_err = sys.stdout, sys.stderr
     root = logging.getLogger()
     saved_handlers, saved_level, saved_disable = root.handlers[:], root.level, root.manager.disable
-    sink = _BufStream(_LOG_BUF)
-    handler = logging.StreamHandler(sink)
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-    sys.stdout = sys.stderr = sink
+    handler = _BufLogHandler(_LOG_BUF)
+    # Message only -- the level is conveyed by colour (warnings/errors are also
+    # prefixed by the handler), keeping lines concise. Raw print/tqdm is captured
+    # separately via the buffer's file-like write().
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    sys.stdout = sys.stderr = _LOG_BUF
     root.handlers = [handler]
     root.setLevel(logging.INFO)
     logging.disable(logging.NOTSET)

@@ -11,7 +11,9 @@ behaves the same:
 ``_tui_page(stdscr, title, build, ...)`` renders such a list and drives it.
 A white-on-black theme, a persistent bottom status line and small input/message
 helpers round it out. An optional scrollable **log pane** (``_log_enable`` with a
-``deque`` of lines) is docked at the bottom of every page: a page calls
+:class:`LogBuffer`) is docked at the bottom of every page -- it colours lines by
+log level, and a carriage-return-driven progress bar (tqdm) updates one live row
+in place rather than flooding the log. A page calls
 ``_content_dims`` to size its content above the pane, ``_draw_chrome`` to paint
 the footer + status + log, and ``_log_handle_key`` to give the log first crack at
 each key. ``l`` moves keyboard focus into the pane (up/down, PageUp/Down,
@@ -19,9 +21,12 @@ Home/End scroll). This module is pure (no hardware, no project imports) and
 degrades gracefully when curses is unavailable (``curses is None``).
 """
 
+import collections
 import contextlib
 import io
+import re
 import sys
+import threading
 
 try:
     import curses
@@ -53,8 +58,10 @@ def _safe_addstr(win, y, x, text, attr=0):
 # --- Theme: white background, black-on-white text, black highlight bar -------
 def _init_theme(stdscr):
     if curses.has_colors():
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)  # normal
-        curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)  # selected
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)    # normal
+        curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)    # selected
+        curses.init_pair(3, curses.COLOR_RED, curses.COLOR_WHITE)      # log: error
+        curses.init_pair(4, curses.COLOR_MAGENTA, curses.COLOR_WHITE)  # log: warning
         stdscr.bkgd(" ", curses.color_pair(1))
 
 
@@ -93,8 +100,95 @@ def _flash_status(stdscr, msg):
     stdscr.refresh()
 
 
+# --- Log buffer + colouring -------------------------------------------------
+# The pane renders plain text only, so every line is sanitized before storage:
+# ANSI escape sequences (e.g. coloured logs) and C0 control chars are stripped and
+# tabs expanded. Entries are (text, kind); `kind` is a colour tag (see _log_attr)
+# or None for plain output.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _sanitize_log_line(line):
+    return _CTRL_RE.sub("", _ANSI_RE.sub("", line).expandtabs()).rstrip()
+
+
+def _log_attr(kind):
+    """Curses attribute for a log entry of the given colour ``kind``."""
+    color = curses.has_colors()
+    if kind == "error":
+        return (curses.color_pair(3) if color else _attr_normal()) | curses.A_BOLD
+    if kind == "warning":
+        return (curses.color_pair(4) if color else _attr_normal()) | curses.A_BOLD
+    if kind in ("debug", "progress"):
+        return _attr_normal() | curses.A_DIM   # muted: internals / live tqdm bar
+    return _attr_normal()                       # info / plain output
+
+
+class LogBuffer:
+    """Ring buffer of ``(text, kind)`` log entries for the scrollable log pane.
+
+    Two ways in, kept visually distinct by ``kind`` (a colour tag the pane maps to
+    an attribute via :func:`_log_attr`, or None for plain output):
+
+    * :meth:`add` -- a finalized log record with a ``kind`` (a logging handler
+      colours it by level);
+    * :meth:`write` -- a file-like sink (so it can back ``sys.stdout`` /
+      ``sys.stderr`` and capture ``print`` / ``tqdm``). It splits on newlines and
+      honours carriage returns, so text after a ``\\r`` overwrites the current
+      unfinished line: a tqdm bar updates one live row at the bottom instead of
+      flooding the log.
+
+    Thread-safe: a lock guards the finalized ``deque`` and the live fragment, so a
+    writer thread and the drawing thread never see a torn view (:meth:`snapshot`).
+    """
+
+    def __init__(self, maxlen=1000):
+        self._lines = collections.deque(maxlen=maxlen)   # finalized (text, kind)
+        self._live = ""                                  # current unfinished line
+        self._lock = threading.Lock()
+
+    def add(self, text, kind=None):
+        with self._lock:
+            for ln in str(text).split("\n"):
+                self._lines.append((_sanitize_log_line(ln), kind))
+
+    def write(self, s):
+        with self._lock:
+            self._live += s
+            while True:
+                i_n = self._live.find("\n")
+                i_r = self._live.find("\r")
+                if i_n == -1 and i_r == -1:
+                    break
+                if i_r != -1 and (i_n == -1 or i_r < i_n):
+                    self._live = self._live[i_r + 1:]    # \r: overwrite current line
+                else:
+                    self._lines.append((_sanitize_log_line(self._live[:i_n]), None))
+                    self._live = self._live[i_n + 1:]    # \n: finalize the line
+        return len(s)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    def snapshot(self):
+        """Visible entries: the finalized lines plus the live (in-progress) row."""
+        with self._lock:
+            out = list(self._lines)
+            live = _sanitize_log_line(self._live)
+        if live:
+            out.append((live, "progress"))
+        return out
+
+    def __len__(self):
+        return len(self.snapshot())
+
+
 # --- Log pane: one scrollable log window docked at the bottom of every page ----
-# A run pins a live log to the screen by handing _log_enable a deque of lines.
+# A run pins a live log to the screen by handing _log_enable a LogBuffer.
 # Then EVERY page draws it the same way: _content_dims(stdscr) gives the rows left
 # for the page's own content; the page draws within that, then calls
 # _draw_chrome(stdscr, footer) to lay down the footer + status + log, and in its
@@ -103,7 +197,7 @@ def _flash_status(stdscr, msg):
 # it. 'l' moves keyboard focus into the pane so arrows / PageUp/Down / Home/End
 # scroll the log. State is module-global, like _STATUS.
 _LOG = {
-    "buf": None,        # deque of log lines to show, or None -> pane hidden
+    "buf": None,        # LogBuffer to show, or None -> pane hidden
     "height": 8,        # desired number of log lines in the pane
     "title": "log",     # shown in the pane's header bar
     "focused": False,   # True while keystrokes scroll the log, not the page
@@ -112,7 +206,7 @@ _LOG = {
 
 
 def _log_enable(buf, height=8, title="log"):
-    """Show ``buf`` (a deque of strings) as the scrollable log pane on every page."""
+    """Show ``buf`` (a :class:`LogBuffer`) as the scrollable log pane on every page."""
     _LOG.update(buf=buf, height=height, title=title, focused=False, offset=0)
 
 
@@ -219,9 +313,9 @@ def _clear_eol(stdscr, y, x=0):
 
 
 def _log_window(region):
-    """The slice of log lines currently visible for ``region`` (newest at bottom)."""
+    """The visible ``(text, kind)`` entries for ``region`` (newest at bottom)."""
     n = region[1]
-    lines = list(_LOG["buf"])
+    lines = _LOG["buf"].snapshot()
     end = len(lines) - _LOG["offset"]
     start = max(0, end - n)
     return lines[start:end]
@@ -242,9 +336,9 @@ def _draw_log(stdscr):
     _clear_eol(stdscr, header_y)
     bar = f"--- {_LOG['title']} ({hint}) ".ljust(max(0, w - 2), "-")
     _safe_addstr(stdscr, header_y, 1, bar, hattr)
-    for j, line in enumerate(_log_window(region)):
+    for j, (text, kind) in enumerate(_log_window(region)):
         _clear_eol(stdscr, header_y + 1 + j)
-        _safe_addstr(stdscr, header_y + 1 + j, 1, line, _attr_normal())
+        _safe_addstr(stdscr, header_y + 1 + j, 1, text, _log_attr(kind))
 
 
 def _draw_chrome(stdscr, footer):
