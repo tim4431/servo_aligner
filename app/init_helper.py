@@ -20,13 +20,9 @@ in order). The individual options are:
 * **Identify a servo** -- briefly jog one selected servo back and forth so you
   can see which physical motor a given id is.
 
-Run it from ``src/`` before anything else:
+Run it from the repo root before anything else:
 
-    python init_helper.py
-
-or, in production (installed under expctl):
-
-    python -m expctl.servers.servoaligner.init_helper
+    python app/init_helper.py
 
 This module talks to the bus directly via ``scservo_sdk``; it deliberately does
 NOT import ``servodriver``/``config``, so it is safe to run before the YAML

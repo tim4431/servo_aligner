@@ -10,7 +10,12 @@ control panel:
   * a switch to turn the **ZMQ server** (``zmq_server.py``) on and off -- it runs
     in a background thread sharing this console's single serial connection.
 
-In production (installed under expctl): ``python -m expctl.servers.servoaligner.servo_server``.
+The manual controls are also usable one-shot, e.g. for setup scripts::
+
+    python app/servo_server.py set_zero
+    python app/servo_server.py home
+    python app/servo_server.py set_angle 10 -5 0 0 0 0 0 0
+    python app/servo_server.py set_single 3 12.5
 """
 
 import collections
@@ -295,8 +300,9 @@ class ZmqController:
 
     ``Server.main_loop(cond_fn)`` polls every 10 ms and re-checks ``cond_fn``, so
     setting the stop event makes the thread exit cleanly. ``zmq_server`` is
-    imported lazily because it pulls in the expctl framework
-    (``sequence`` -> ``utilities.util``), which only exists in the deployment.
+    imported lazily so the rest of the console still works if the vendored
+    expctl stubs (``ServerClass`` -> ``sequence`` -> ``utilities.util``) or
+    ``pyzmq`` are unavailable.
     """
 
     def __init__(self, servos):
@@ -563,10 +569,36 @@ def control_panel(servos):
         logging.disable(saved_disable)
 
 
+_COMMANDS = ("set_zero", "home", "set_angle", "set_single")
+
+
+def _run_command(servos, cmd, args):
+    """One-shot manual command dispatch (see the module docstring)."""
+    if cmd == "set_zero":
+        servos.set_zero()
+    elif cmd == "home":
+        servos.home()
+    elif cmd == "set_angle":
+        n = len(servos.servo_list)
+        if len(args) != n:
+            raise SystemExit(f"set_angle needs {n} angles (deg), got {len(args)}")
+        servos.set_angle([float(a) for a in args])
+    elif cmd == "set_single":
+        if len(args) != 2:
+            raise SystemExit("usage: set_single <channel index> <angle deg>")
+        servos.set_single(int(args[0]), float(args[1]))
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] not in _COMMANDS:
+        raise SystemExit(f"unknown command {sys.argv[1]!r} (expected one of: {', '.join(_COMMANDS)})")
+    if len(sys.argv) > 1:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     servos = Servoset(SERVER["board_id"], SERVO_CHANNEL_LIST)
     try:
-        if tui_available():
+        if len(sys.argv) > 1:
+            _run_command(servos, sys.argv[1], sys.argv[2:])
+        elif tui_available():
             control_panel(servos)
         else:
             # Non-interactive (piped / no terminal): print a one-shot snapshot.

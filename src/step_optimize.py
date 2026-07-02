@@ -144,8 +144,11 @@ def pts_iterator(
 
         return (parabst, Tbst)
 
-    except Exception as e:
-        logging.error(e)
+    except Exception:
+        # Log with traceback, then propagate: returning None here would only
+        # defer the failure to the caller's unpacking with a poorer message.
+        logging.exception("pts_iterator failed")
+        raise
 
 
 def step_optimize(servos,
@@ -154,16 +157,14 @@ def step_optimize(servos,
                   p0=None,
                   zero=None,
                   method="spiral",
-                  bounds_single = (-100,100),
+                  bounds_single=(-100, 100),
                   opt_type="max",
                   accept_frac=0.7,
-                  )->np.ndarray:
+                  ) -> np.ndarray:
     #
     if method == 'L-BFGS-B':
-        # servos.set_precision(1)
         options = BFGS_params
     elif method == 'spiral':
-        # servos.set_precision(5)
         options = spiral_params
     else:
         raise ValueError(f"unknown method: {method}")

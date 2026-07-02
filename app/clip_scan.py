@@ -4,23 +4,14 @@ import time
 import logging
 
 logging.basicConfig(
-    level=logging.INFO,  # Set the logging level to DEBUG
-    # level= logging.DEBUG,|
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
 import _bootstrap  # noqa: F401 -- prepend ../src on sys.path for the library imports below
 from servodriver import Servoset
 from servo_util import nraddr
-from fit_gaussian import (
-    gaussian_2d,
-    gaussian_2d_smooth_heaviside,
-    fit_and_plot,
-    fit_gaussian_2d,
-    fit_gaussian_2d_smooth_heaviside,
-    fit_and_plot_smooth_heaviside,
-    popt_get_mu_cov,
-)
+from fit_gaussian import fit_and_plot_smooth_heaviside, popt_get_mu_cov
 from motor_scan import motor_2d_scan
 from callback_functions import make_callback_func, intensity_adc
 from datastore import DataStore
@@ -69,7 +60,6 @@ def scan_and_analyze(
 ):
     # PERFORM SCAN
     time.sleep(1)
-    # ,S
     logging.info("SCANNING: {} {}".format(POS_MASK, ITER_NUM))
     cf = lambda para: callback_func(para, pos_mask=POS_MASK, zero=zero)
     scan_start_time = time.time()
@@ -92,22 +82,13 @@ def scan_and_analyze(
     #
     # XXDOT/YYDOT plot
     if plot_type == 0:
-        # plot
         fig, ax = plt.subplots(1, 4, figsize=(20, 5))
 
-        # ax0. accept_func
+        # ax0. accept_func region overlaid on the normalized scan
         ax0 = ax[0]
-        Zacc = np.zeros_like(X)
-        if isinstance(N_pts, int):
-            N_pts_x, N_pts_y = N_pts, N_pts
-        elif isinstance(N_pts, tuple):
-            N_pts_x, N_pts_y = N_pts
-
         accept_func = posmask2acceptfunc(POS_MASK)
-        xy = np.array([X, Y])  # Combine X and Y arrays
-        Zacc = accept_func(xy).astype(
-            int
-        )  # Apply the acceptance function and convert to int
+        xy = np.array([X, Y])
+        Zacc = accept_func(xy).astype(int)
         ax0.imshow(
             Zacc * 0.2 + Z_norm,
             extent=[X.min(), X.max(), Y.min(), Y.max()],
@@ -121,8 +102,7 @@ def scan_and_analyze(
         ax1.scatter(mu[0], mu[1], marker="x", color="black")
         eigvals, eigvecs = np.linalg.eig(cov)
         sigmas = np.sqrt(eigvals)
-        print(popt)
-        print(sigmas)
+        logging.info("fit popt: {}, sigmas: {}".format(popt, sigmas))
 
         # ax2. central point magnify
         ax2 = ax[2]
@@ -146,17 +126,15 @@ def scan_and_analyze(
         #
     #
     elif plot_type == 1:
-        # plot
         fig, ax = plt.subplots(figsize=(10, 5))
 
-        # ax1. fit_gaussian_2d
+        # fit_gaussian_2d only
         popt = fit_and_plot_smooth_heaviside(X, Y, Z, ax=ax)
         mu, cov = popt_get_mu_cov(popt)
         ax.scatter(mu[0], mu[1], marker="x", color="black")
         eigvals, eigvecs = np.linalg.eig(cov)
         sigmas = np.sqrt(eigvals)
-        print(popt)
-        print(sigmas)
+        logging.info("fit popt: {}, sigmas: {}".format(popt, sigmas))
         ax.set_title(
             "{}, mu = ({:.3f},{:.3f}), sigmas = ({:.3f},{:.3f})".format(
                 fileName, mu[0], mu[1], sigmas[0], sigmas[1]
@@ -164,7 +142,7 @@ def scan_and_analyze(
         )
         STORE.save_fig(fileName, dpi=300, bbox_inches="tight")
 
-    #
+    # Move to the fitted center, let the mount settle, then re-read there.
     cf(list(mu))
     time.sleep(1)
     logging.info("going to mu: {}".format(mu))
@@ -175,7 +153,6 @@ def scan_and_analyze(
         logging.info("calculating new zero point")
         zero_new = nraddr(zero, np.array(list(mu)), POS_MASK)
         logging.info("zero_new: {}".format(zero_new))
-        # servos.set_zero()
     else:
         logging.info("I too small, not setting zero point")
         zero_new = zero
@@ -193,17 +170,14 @@ def scan_and_analyze(
 
 
 if __name__ == "__main__":
+    # To resume from a previous scan's fitted zero, load it from the store:
+    #   zero = STORE.load_npz("clip_A_Y_YDOT_3_popt")["zero"]
     zero = np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=float)
-    # fileName = "clip_A_Y_YDOT_3"
-    # d = STORE.load_npz(fileName + "_popt")
-    # zero = d['zero']
-    # print(zero)
     cf0 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"], zero=zero)
-    print(cf0([0, 0, 0, 0, 0, 0, 0, 0]))
+    logging.info("Objective at origin: {}".format(cf0([0, 0, 0, 0, 0, 0, 0, 0])))
     #
     for ITER_NUM in range(6, 7):
         for POS_MASK in [knob_mask("A", "X_XDOT"), knob_mask("A", "Y_YDOT")]:
-            # for POS_MASK in [knob_mask("A", "Y_YDOT")]:
             N_pts = CLIP_SCAN.get("N_pts_fine", 50)
             SCAN_RANGE = (
                 CLIP_SCAN.get("scan_range_xxdot", 500)

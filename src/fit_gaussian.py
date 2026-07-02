@@ -1,4 +1,21 @@
-# fit X,Y,Z to a 2D gaussian
+"""Least-squares fits of a 2D intensity map ``(X, Y, Z)`` to beam models.
+
+Two model families, each with a fit + plot helper:
+
+* plain 2D Gaussian (optionally with scale/offset) — ``fit_gaussian_2d`` /
+  ``fit_and_plot``;
+* "smooth heaviside": a Gaussian-shaped plateau with an erfc edge, the
+  beam-clip model ``clip_scan.py`` fits to find the clip center —
+  ``fit_gaussian_2d_smooth_heaviside`` / ``fit_and_plot_smooth_heaviside``.
+
+The fit parameter vector ``popt`` is ``[mu_x, mu_y, cov_xx, cov_xy, cov_yy,
+...model extras]``; ``popt_get_mu_cov`` unpacks the shared part. Initial
+guesses come from intensity-weighted moments (``statistics_for_gaussian2d``).
+Pure numpy/scipy/matplotlib — no hardware imports, safe anywhere.
+"""
+
+import logging
+
 from scipy.optimize import least_squares
 import numpy as np
 import matplotlib.pyplot as plt
@@ -89,19 +106,20 @@ def fit_gaussian_2d(X,Y,Z,p0=None,offset=False):
         if offset == False:
             p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1]])
         else:
-            # get the value at (mu[0],mu[1])
+            # sign the scale by whether the peak at (mu_x, mu_y) sits nearer the
+            # max (a bright peak) or the min (a dip)
             xidx = np.unravel_index(np.argmin(np.abs(X-mu[0])),X.shape)[0]
             yidx = np.unravel_index(np.argmin(np.abs(Y-mu[1])),Y.shape)[1]
             Z_center = Z[xidx,yidx]
-            print("X,Y,Z_center: ",X[xidx,yidx],Y[xidx,yidx],Z_center)
+            logging.info("X,Y,Z_center: %s %s %s", X[xidx,yidx], Y[xidx,yidx], Z_center)
             if np.abs(Z_center-np.min(Z))>np.abs(Z_center-np.max(Z)):
                 scale = +(np.max(Z)-np.min(Z))
-                offset = np.min(Z)
+                z_offset = np.min(Z)
             else:
                 scale = -(np.max(Z)-np.min(Z))
-                offset = np.max(Z)
-            p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1], scale, offset])
-        print("Initial guess for p0: ", p0)
+                z_offset = np.max(Z)
+            p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1], scale, z_offset])
+        logging.info("Initial guess for p0: %s", p0)
 
     res = least_squares(_residuals, p0, args=(xdata, ydata, zdata))
     popt = res.x
@@ -124,7 +142,7 @@ def fit_gaussian_2d_smooth_heaviside(X,Y,Z,p0=None):
     if p0 is None:
         mu, cov = statistics_for_gaussian2d(X, Y, Z)
         p0 = np.array([mu[0], mu[1], cov[0, 0], cov[0, 1], cov[1, 1], np.max(Z)/2, 0.1])
-        print("Initial guess for p0: ", p0)
+        logging.info("Initial guess for p0: %s", p0)
 
     res = least_squares(_residuals, p0, args=(xdata, ydata, zdata))
     popt = res.x

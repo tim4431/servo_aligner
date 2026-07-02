@@ -99,27 +99,11 @@ class sts3032:
         with self.lock:
             self.set_register(ADDR_STS_TORQUE_ENABLE, 128)
             try:
-                scs_present_position_speed, scs_comm_result, scs_error = (
-                    self.packetHandler.read4ByteTxRx(
-                        self.SCS_ID, ADDR_STS_PRESENT_POSITION
-                    )
-                )
-                if scs_comm_result != COMM_SUCCESS:
-                    logging.info(
-                        self.message
-                        + "result "
-                        + str(self.packetHandler.getTxRxResult(scs_comm_result))
-                    )
-                elif scs_error != 0:
-                    logging.error(
-                        self.message
-                        + "error "
-                        + str(self.packetHandler.getRxPacketError(scs_error))
-                    )
+                self.read_register(ADDR_STS_PRESENT_POSITION, length=4)
                 logging.info(self.message + "SCServo zero set!")
                 return 0
-            except:
-                logging.error(self.message + "Read not sucessful!")
+            except Exception:
+                logging.error(self.message + "Read not successful!")
                 return 1
 
     def set_acc(self, set_acc):
@@ -139,8 +123,11 @@ class sts3032:
         self.set_register(ADDR_STS_TORQUE_ENABLE, 1)
 
 
-# A bigger Class that contains all the motors, should try to initialize the port connection as well in init of this class
 class Servoset:
+    """The full set of servos on one driver board: connects the serial port,
+    moves the motors as a group (with optional de-hysteresis), and persists
+    their last-known encoder positions under ``STATE_FOLDER``."""
+
     def __init__(self, board_id=0, servo_channel_list=[]):
         self.board_id = board_id
         self.servo_channel_list = servo_channel_list
@@ -219,35 +206,20 @@ class Servoset:
         self.timeout = timeout
 
     def connect(self):
+        # Try each configured serial device in order; the first that opens at the
+        # configured baudrate wins.
         for DEVICENAME in DEVICENAME_LIST:
             try:
                 self.portHandler = PortHandler(DEVICENAME)
                 self.portHandler.setPacketTimeoutMillis(100)
                 # sms_sts is the STS/SMS model handler; it subclasses
-                # protocol_packet_handler and owns the port, so it doubles as
+                # protocol_packet_handler and owns the port.
                 self.packetHandler = sms_sts(self.portHandler)
-
-                # Open port
-                try:
-                    if self.portHandler.openPort():
-                        logging.info("Succeeded to open the port")
-                    else:
-                        logging.error("Failed to open the port")
-                        logging.error("Press any key to terminate...")
-                        getch()  # type: ignore
-                        quit()
-                except Exception as e:
-                    print(e)
-                # Set port baudrate
-                if self.portHandler.setBaudRate(BAUDRATE):
-                    logging.info("Succeeded to change the baudrate")
-                else:
-                    logging.error("Failed to change the baudrate")
-                    logging.error("Press any key to terminate...")
-                    getch()  # type: ignore
-                    quit()
-
-                # if success
+                if not self.portHandler.openPort():
+                    raise IOError(f"could not open port {DEVICENAME}")
+                if not self.portHandler.setBaudRate(BAUDRATE):
+                    raise IOError(f"could not set baudrate {BAUDRATE} on {DEVICENAME}")
+                logging.info("Connected to %s at %d baud", DEVICENAME, BAUDRATE)
                 break
             except Exception:
                 logging.info(f"The device {DEVICENAME} is not available, try next ...")
@@ -316,10 +288,6 @@ class Servoset:
             ),
         )
 
-    # def __del__(self):
-    #     # also save when object is destroyed
-    #     self.save()
-
     def _log_zero_history(self, previous_positions):
         """Append the pre-zero encoder readings to a per-board history log.
 
@@ -380,7 +348,7 @@ class Servoset:
         for servo in self.servo_list:
             iteration = 1
             while 1:
-                logging.debug("Set Zero Trail " + str(iteration))
+                logging.debug("Set zero try " + str(iteration))
                 result = servo.set_zero()
                 if result == 0:
                     break
@@ -411,8 +379,7 @@ class Servoset:
         for SCS_ID in self.SCS_ID_list:
             scs_addparam_result = groupSyncRead.addParam(SCS_ID)
             if scs_addparam_result != True:
-                logging.error("[ID:%03d] groupSyncRead addparam failed" % SCS_ID)
-                quit()
+                raise RuntimeError("[ID:%03d] groupSyncRead addparam failed" % SCS_ID)
         return groupSyncRead
 
     def group_sync_read(self, groupSyncRead, start_address, data_length):
@@ -455,8 +422,7 @@ class Servoset:
                 scs_addparam_result = groupSyncWrite.addParam(SCS_ID, param_goal_position)
                 index += 1
                 if scs_addparam_result != True:
-                    logging.error("[ID:%03d] groupSyncWrite addparam failed" % SCS_ID)
-                    quit()
+                    raise RuntimeError("[ID:%03d] groupSyncWrite addparam failed" % SCS_ID)
 
             # Syncwrite goal position
             scs_comm_result = groupSyncWrite.txPacket()
@@ -552,18 +518,16 @@ class Servoset:
             int(goal_position) for goal_position in list(goal_position_list)
         ]
         #
-        POS_THRESHOLD = DEHYS_THRESHOLD
         # always go to plus direction, if goes to negative, then first go to more negative, then go to positive
         de_hysterisis_mask = [0] * len(self.SCS_ID_list)
         for i in range(len(self.SCS_ID_list)):
             d_pos = goal_position_list[i] - self.multi_position_list[i]
-            if (d_pos < 0) and (abs(d_pos) > POS_THRESHOLD):
+            if (d_pos < 0) and (abs(d_pos) > DEHYS_THRESHOLD):
                 de_hysterisis_mask[i] = 1
         #
         if (not self.de_hysterisis) or (np.sum(de_hysterisis_mask) == 0):
             self._set_position(goal_position_list, pos_mask)
         else:
-            # print(de_hysterisis_mask,goal_position_list)
             goal_position_list_deh = [
                 x - DEHYS_OVERSHOOT if de_hysterisis_mask[i] else x
                 for i, x in enumerate(goal_position_list)
@@ -600,14 +564,11 @@ class Servoset:
         )
 
     def _set_position(self, goal_position_list, pos_mask=None):
-        scs_goal_position = []
-        for goal_position in goal_position_list:
-            if goal_position >= 0:
-                val = 0b0000000000000000 | abs(goal_position)
-                scs_goal_position.append(val)
-            elif goal_position < 0:
-                val = 0b1000000000000000 | abs(goal_position)
-                scs_goal_position.append(val)
+        # FEETECH goal position is bit-15 sign-magnitude (the inverse of the
+        # scs_tohost(..., 15) decode in get_position).
+        scs_goal_position = [
+            abs(gp) | (0x8000 if gp < 0 else 0) for gp in goal_position_list
+        ]
 
         # Initialize GroupSyncWrite instance
         self.group_sync_write_2byte(self.groupSyncWrite_position, scs_goal_position)
@@ -660,8 +621,6 @@ class Servoset:
             iteration += 1
 
         self.get_position()
-        # Clear syncread parameter storage
-        # self.groupSyncRead_position.clearParam()
 
     def angle_to_position(self, angle):
         angle = np.array(angle)
@@ -685,18 +644,6 @@ class Servoset:
         angle_list = [0 for i in range(len(self.servo_list))]
         angle_list[index] = angle
         self.set_angle(angle_list, pos_mask)
-
-    def random_play(self):
-        # self.set_precision(10)
-        TIME_TO_WAIT = 8
-        print("Random play starting in {} seconds".format(TIME_TO_WAIT))
-        time.sleep(TIME_TO_WAIT)
-        print("Random play starting")
-        for i in range(len(self.servo_list)):
-            print("Servo ", i)
-            self.set_single(i, 30)
-            self.set_single(i, 0)
-            time.sleep(1)
 
     def close(self):
         # Close port

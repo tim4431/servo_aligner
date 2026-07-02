@@ -4,7 +4,7 @@
 # (Python 3.8). Install everything with:
 #     pip install -r requirements.txt
 # or run the setup wizard, which installs any that are missing:
-#     python src/init_helper.py
+#     python app/init_helper.py
 
 # --- numerics / optimization / plotting --------------------------------------
 numpy>=1.24.3

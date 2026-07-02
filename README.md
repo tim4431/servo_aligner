@@ -5,7 +5,7 @@ Algorithm and designs for controlling STS3032 servo motors, for automatic beam a
 <img src="doc/figs/servo_aligner_assembly.png" alt="servo aligner assembly" width="400">
 
 **Features:**
-- Packaged servo control [api](src/servo_driver.py).
+- Packaged servo control [api](src/servodriver.py).
 - [Spiral search](doc/spiral.md) based low-dimensional walking of coupled mirror knobs.
 - Robust automated alignment with a model-free jacobian.
 

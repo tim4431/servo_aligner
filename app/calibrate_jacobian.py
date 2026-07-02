@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import time
 import logging
 from collections import defaultdict
 
@@ -28,27 +26,26 @@ servos.set_torque(True)
 callback_func = make_callback_func(servos, intensity_adc)
 
 
-def cord_pm_offset(N,normd,i):
-    # choose a position in offset to be +-30, each sample 5 times
-    j = i%4
-    pm = 1 if i//4%2==0 else -1
+def cord_pm_offset(normd, i):
+    # offset of +-normd along one coordinate axis, cycling axis then sign with i
+    j = i % 4
+    pm = 1 if i // 4 % 2 == 0 else -1
     offset = np.zeros(4)
-    offset[j] = pm*normd
+    offset[j] = pm * normd
     return offset
 
-def random_norm_offset(N,normd):
-    # offset with arbitrary direction with norm=normd
+def random_norm_offset(normd):
+    # offset in a random direction with norm=normd
     offset = np.random.randn(4)
-    offset = offset/np.linalg.norm(offset)*normd
-    return offset
+    return offset / np.linalg.norm(offset) * normd
 
-def lin_comb_offset(N,normd, vecs,i):
-    vecs_normed = [v/np.linalg.norm(v) for v in vecs]
+def lin_comb_offset(normd, vecs):
+    # offset with norm=normd from a random positive combination of vecs
+    vecs_normed = [v / np.linalg.norm(v) for v in vecs]
     distrib = np.random.rand(len(vecs))
-    distrib = distrib/np.linalg.norm(distrib)
-    vec_norm_distrib = np.sum([distrib[i]*vecs_normed[i] for i in range(len(vecs))],axis=0)
-    offset = vec_norm_distrib*normd
-    return offset
+    distrib = distrib / np.linalg.norm(distrib)
+    vec_norm_distrib = np.sum([d * v for d, v in zip(distrib, vecs_normed)], axis=0)
+    return vec_norm_distrib * normd
 
 def load_assumed_jac(path):
     """Load a previously-fit Jacobian for extrapolation bootstrapping.
@@ -71,13 +68,11 @@ JAC_ASSUME_PATH = JACOBIAN.get("assume_path")
 jac_assume, jac_x0 = load_assumed_jac(JAC_ASSUME_PATH)
 
 cf00 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"],zero=np.array([0,0,0,0,0,0,0,0],dtype=float))
-print(cf00([0,0,0,0,0,0,0,0]))
+logging.info(f"Objective at origin: {cf00([0,0,0,0,0,0,0,0])}")
 
-#
-#ss
 N=1
 normd = JACOBIAN.get("normd", 20)
-offset_type = 'zero' # 'pm' or 'rand' or 'lin' or 'zero'
+offset_type = 'zero' # 'pm' / 'rand' / 'lin' / 'zero' / 'spec'
 MASTER = "B"  # A=upper path, B=lower path; per-stage knobs optimize the slave path
 SLAVE = "A" if MASTER == "B" else "B"
 
@@ -93,23 +88,18 @@ if COLLECT:
 for i in range(N):
     if COLLECT:
         dataset = jac_store.load_npy(ds_name).item()
-        # print(dataset)
 
     zero = np.array([0,0,0,0,0,0,0,0],dtype=float)
-    # zero = np.array([3.0, 58.0, 11.0, -85.0, 0.0, 0.0, 0.0, 0.0],dtype=float)
-    cf0 = lambda para: callback_func(para, pos_mask=MASKS["POS_ALL"],zero=zero)
-    # print(cf0([0,0,0,0,0,0,0,0]))
-    #
     offset_mask = knob_mask(MASTER, "POS_ALL")
 
     if offset_type == 'pm':
-        offset = cord_pm_offset(N,normd,i)
+        offset = cord_pm_offset(normd, i)
     elif offset_type == 'rand':
-        offset = random_norm_offset(N,normd)
+        offset = random_norm_offset(normd)
     elif offset_type == 'lin':
         # coupling directions per master path live in calibration.yaml.
         vecs = [np.array(v) for v in COUPLING_VECTORS[MASTER]]
-        offset = lin_comb_offset(N,normd,vecs,i)
+        offset = lin_comb_offset(normd, vecs)
     elif offset_type == 'zero':
         offset = np.zeros(np.sum(offset_mask))
     elif offset_type == 'spec':
@@ -118,20 +108,17 @@ for i in range(N):
     zero = compose_para(para=offset,pos_mask = offset_mask, zero=zero,jac=jac_assume,jac_master_mask=offset_mask,jac_x0=jac_x0)
     logging.info(f"Offset = {offset}, Zero = {zero}")
     #
-    #
     try:
         logging.info(f"Start optimization with zero = {zero}")
         # The fiber-coupling step sequence (X_Y -> X_XDOT -> Y_YDOT -> joint
-        # L-BFGS-B over POS_ALL) now lives in optimize.fiber_coupling.
+        # L-BFGS-B over POS_ALL) lives in optimize.fiber_coupling.
         zero, I = fiber_coupling(servos, callback_func, zero, path=SLAVE)
-        print(I)
+        logging.info(f"Round {i}: final I = {I}")
         #
         if COLLECT:
             dataset[tuple(offset)].append((list(zero),I))
-            # print(dataset)
             jac_store.save_npy(ds_name, dataset)
-        print("i=",i)
 
     except Exception as e:
         servos.close()
-        logging.error(f"Error in iterative_optimize: {e}")
+        logging.error(f"Error in calibration round {i}: {e}")

@@ -4,7 +4,7 @@
 This note describes how those 2D searches are **staged into a full optimization round** over one beam path's four knobs (`x, y, xdot, ydot`): first spiral passes in well-chosen 2D subspaces, then one
 full **4D L-BFGS-B** polish at the end. These are ingredients **C** (iterate between pairs of knobs) and **D** (finish with a gradient step)
 From the developer notes, the staging is implemented in
-[`calibrate_jacobian.py`](../src/calibrate_jacobian.py) via
+[`calibrate_jacobian.py`](../app/calibrate_jacobian.py) via
 [`step_optimize`](../src/step_optimize.py).
 
 ## Why 2D pairs?
@@ -27,7 +27,7 @@ Left panel: visited points colored by intensity, with the dragged `(x0, y0)`
 center trajectory; right panel: intensity vs iteration. Across passes the
 visited cloud contracts toward the bright region.
 
-## The staged round in code ([`calibrate_jacobian.py`](../src/calibrate_jacobian.py))
+## The staged round in code ([`calibrate_jacobian.py`](../app/calibrate_jacobian.py))
 
 One full round chains four `step_optimize` stages, threading the running
 origin `zero` (a full 8-channel angle vector) from each stage into the next:

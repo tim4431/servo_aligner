@@ -1,3 +1,16 @@
+"""Raster scans of the objective over one or two knob directions.
+
+``motor_2d_scan`` sweeps a 2D grid over a knob pair (boustrophedon order via
+``servo_util.create_zigzag_X``, minimising motor travel) and returns the
+``(X, Y, Z)`` intensity map; ``clip_scan.py`` fits the beam-clip center to it.
+``motor_1d_scan`` is the 1D line-scan variant. Both take the optimizer-style
+``callback_func`` (move, then read the objective) and an optional
+``accept_func`` that skips grid points outside the region of interest.
+
+An error mid-scan is logged and the partial ``Z`` is returned; either way the
+servos are sent home afterwards.
+"""
+
 import numpy as np
 import tqdm
 import matplotlib.pyplot as plt
@@ -6,8 +19,6 @@ from servo_util import create_zigzag_X
 
 def motor_1d_scan(N_pts, scan_range,scan_vec, servo, callback_func, accept_func=None):
     L = np.linspace(-scan_range,scan_range,N_pts)
-    # X = l.vec[0]
-    # Y = l.vec[1]
     X = L * scan_vec[0]
     Y = L * scan_vec[1]
     Z = np.zeros_like(L)
@@ -25,7 +36,6 @@ def motor_1d_scan(N_pts, scan_range,scan_vec, servo, callback_func, accept_func=
                     Z[i] = z
                 pbar.update(1)
     except Exception as e:
-        servo.close()
         logging.error(f"Error in motor_1d_scan: {e}")
     finally:
         servo.home()
@@ -62,7 +72,6 @@ def motor_2d_scan(N_pts, scan_range, servos, callback_func, accept_func=None):
         with tqdm.tqdm(total=len(Xs)*len(Ys)) as pbar:
             for i in range(len(Ys)):
                 for j in range(len(Xs)):
-                    # print(i,j)
                     x,y = X_zig[i,j], Y[i,j]
                     idx = index_map[i,j] # original index of X
                     idx_i, idx_j = np.unravel_index(idx, X.shape) # r[idx_i, idx_j] == r_zig[i,j]
@@ -73,16 +82,11 @@ def motor_2d_scan(N_pts, scan_range, servos, callback_func, accept_func=None):
                     pbar.update(1)
 
     except Exception as e:
-        servos.close()
         logging.error(f"Error in motor_2d_scan: {e}")
     finally:
         servos.home()
     #
     plt.matshow(Z,extent=[np.min(X),np.max(X),np.min(Y),np.max(Y)],origin="lower")
-    # plt.imshow(Z/np.max(Z),origin="lower",extent=[np.min(X),np.max(X),np.min(Y),np.max(Y)])
-    # plt.contourf(X,Y,Z)
     plt.colorbar()
-    print(np.max(Z))
-    print(np.min(Z))
-    # plt.show()
+    logging.info(f"Z range: {np.min(Z)} .. {np.max(Z)}")
     return X,Y,Z

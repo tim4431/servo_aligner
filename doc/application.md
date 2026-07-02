@@ -3,7 +3,7 @@
 The two end-to-end procedures the aligner exists for:
 
 1. **Center a beam on the cavity axis** — using the clip-scan / sigmoid-ellipse
-   method ([`clip_scan.py`](../src/clip_scan.py)).
+   method ([`clip_scan.py`](../app/clip_scan.py)).
 2. **Align the MOT with the lattice** — using the calibrated
    [Jacobian](jacobian.md) to keep the lattice through the MOT while walking to
    the trap.
@@ -30,7 +30,7 @@ bore length); off-axis rays clip sooner, so the transmitting region is an
 
 ![Clip geometry: aperture d over length L gives Δθ=d/L; the transmitting region is a tilted ellipse fit with a sigmoid](figs/clip_scan_geometry_sigmoid_ellipse.jpg)
 
-### The scan ([`clip_scan.py`](../src/clip_scan.py))
+### The scan ([`clip_scan.py`](../app/clip_scan.py))
 
 `scan_and_analyze` runs a **2D raster** over a knob pair (`motor_2d_scan`,
 boustrophedon/zig-zag order to minimize motor travel), reading the photodiode at
@@ -47,7 +47,7 @@ $$
 (`gaussian_2d_smooth_heaviside` / `fit_gaussian_2d_smooth_heaviside` in
 [`fit_gaussian.py`](../src/fit_gaussian.py)). The fit returns the **center `mu`** (the aligned knob
 setting) and the covariance `Sigma` (orientation/size of the transmitting
-region). [`clip_scan.py`](../src/clip_scan.py) then drives the knobs to `mu` and, if the intensity
+region). [`clip_scan.py`](../app/clip_scan.py) then drives the knobs to `mu` and, if the intensity
 there is meaningful, adopts it as the new `zero`.
 
 Iterate this between knob pairs (`X_XDOT`, `Y_YDOT`, then a small `X_Y`) to walk

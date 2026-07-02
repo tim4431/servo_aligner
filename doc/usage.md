@@ -3,6 +3,11 @@
 How to configure the program, start the ZMQ server, drive servos from the CLI,
 and run the standalone alignment/calibration scripts.
 
+The tree is split in two: [`app/`](../app/) holds the entry-point scripts you
+run (`python app/<script>.py` from the repo root — each one starts with
+`import _bootstrap`, which puts the sibling `src/` on `sys.path`), and
+[`src/`](../src/) holds the importable library.
+
 ## 1. Prerequisites
 
 This software talks to **real hardware** and is meant to run on the Raspberry Pi
@@ -21,8 +26,11 @@ getting-started PDF are in [`files/`](files/)).
 ## 2. Configure the YAML files
 
 All machine- and setup-specific values live in **two gitignored YAML files** in
-`config/` (a sibling of `src/`, kept out of the source tree), loaded once by
-[`config.py`](../src/config.py). Create them from the checked-in templates:
+`config/` (a sibling of `src/` and `app/`), loaded once by
+[`config.py`](../src/config.py). The easiest way to create them is the setup
+wizard, `python app/init_helper.py` (it also installs missing dependencies,
+scans the bus to build the channel map, and does the servo register steps).
+Or create them from the checked-in templates by hand:
 
 ```bash
 cp config/machine.template.yaml     config/machine.yaml
@@ -65,73 +73,62 @@ variables. Constants fixed by the STS3032 itself (control-table addresses, the
 `2048`/`4096` encoder geometry) are **not** in YAML — they stay in code.
 
 `servos_<board>.json` (under `state_folder`) is created automatically on first run
-and rewritten on every move and at exit; it lets software turn-counting survive a
-program restart (but not a driver-board power loss). It records `board_id`, a
+and rewritten on every move and at exit; it lets the last-known multi-turn
+positions survive a program restart (but not a driver-board power loss, which
+resets the servos' hardware turn count). It records `board_id`, a
 timestamp, the servo **IDs** (bus addresses) and the positions; on load, a
 mismatching servo count or ID list is reported and stale positions are ignored. A
 template is in [`servos_template.json`](servos_template.json).
 
-## 3. Two ways to run
-
-The same `src/` tree runs in two contexts, which **changes how you launch it**:
-
-- **Standalone** — run scripts directly *from inside `src/`* so the flat imports
-  (`from servodriver import Servoset`) resolve.
-- **Installed under expctl** — in production the tree is dropped into the lab's
-  experiment-control package as `expctl.servers.servoaligner`, and you launch
-  with `python -m expctl.servers.servoaligner.<module>`.
+## 3. Running the servers and the console
 
 ### Start the ZMQ server
 
-[`zmq_server.py`](../src/zmq_server.py) (class `STSServer`) listens on a ZMQ REP socket (**port
-60627**), receives pickled `Sequence` objects from the `expctl` framework, and
-moves the servos to the requested angles during the `QUEUE` phase. Its `Servoset`
-is injected and its `main_loop(cond_fn)` polls every 10 ms, so the interactive
-console can run it in a background thread and stop it on demand.
+[`app/zmq_server.py`](../app/zmq_server.py) (class `STSServer`) listens on a ZMQ REP socket (**port
+60627**), receives pickled `Sequence` objects from the lab's `expctl`
+experiment-control framework, and moves the servos to the requested angles
+during the `QUEUE` phase. Its `Servoset` is injected and its
+`main_loop(cond_fn)` polls every 10 ms, so the interactive console can run it in
+a background thread and stop it on demand.
 
 ```bash
-# standalone, from src/
-python zmq_server.py
-
-# installed
-python -m expctl.servers.servoaligner.zmq_server
+python app/zmq_server.py          # run the server directly (no console)
 
 # or turn it on/off from the interactive console
-python servo_server.py        # control panel -> "ZMQ server: [start/stop]"
+python app/servo_server.py        # control panel -> "ZMQ server: [open]"
 ```
 
 ### Manual servo controls (the console + one-shot CLI)
 
-[`servo_server.py`](../src/servo_server.py) is the interactive console — a curses control panel with
-the live servo monitor, the manual controls, and the ZMQ-server switch. The same
-manual controls are also available as one-shot commands (these moved here from
-the old server CLI), handy for setup scripts without the experiment framework:
+[`app/servo_server.py`](../app/servo_server.py) is the interactive console — a curses control panel with
+the live servo monitor, the objective page, the manual controls, and the
+ZMQ-server switch. The manual controls are also available as one-shot commands,
+handy for setup scripts without the experiment framework:
 
 ```bash
-python servo_server.py set_zero              # set current pose as the zero/center
-python servo_server.py home                  # move all servos to 0° (position 2048)
-python servo_server.py set_angle 10 -5 0 ... # absolute angles (deg) for all channels
-python servo_server.py set_single 3 12.5     # move one channel (index 3) to 12.5°
-python servo_server.py dehys 0|1             # de-hysteresis off (0) / on (1)
+python app/servo_server.py set_zero              # set current pose as the zero/center
+python app/servo_server.py home                  # move all servos to 0° (position 2048)
+python app/servo_server.py set_angle 10 -5 0 ... # absolute angles (deg) for all channels
+python app/servo_server.py set_single 3 12.5     # move one channel (index 3) to 12.5°
 ```
 
-(Replace `python servo_server.py` with the `python -m expctl.…servo_server` form
-when installed.)
+(De-hysteresis is a runtime toggle — flip it in the control panel, or set its
+default in `machine.yaml`.)
 
 ## 4. Standalone alignment / calibration scripts
 
 These construct their own `Servoset` and **start moving motors immediately** when
-run — they are scripts, not libraries. Run from `src/` (or via `-m`):
+run — they are scripts, not libraries:
 
 ```bash
-python clip_scan.py            # 2D raster scan of a knob pair; fit the beam-clip center
-python calibrate_jacobian.py   # spiral + L-BFGS-B coupling optimization; collect Jacobian data
+python app/clip_scan.py            # 2D raster scan of a knob pair; fit the beam-clip center
+python app/calibrate_jacobian.py   # spiral + L-BFGS-B coupling optimization; collect Jacobian data
 ```
 
 For a long unattended scan on the Pi, detach it:
 
 ```bash
-nohup python -m expctl.servers.servoaligner.clip_scan > clip.log 2>&1 &
+nohup python app/clip_scan.py > clip.log 2>&1 &
 ```
 
 What they do and the physics behind them: [application.md](application.md)
@@ -144,8 +141,17 @@ created automatically — point `data_folder` at a writable location.
 
 ## 5. Safe-to-import vs hardware modules
 
-If you are reading/editing code off the Pi, only these import without hardware:
-[`config.py`](../src/config.py), [`servo_util.py`](../src/servo_util.py), [`spiral.py`](../src/spiral.py), [`fit_gaussian.py`](../src/fit_gaussian.py),
-[`numeric_sim.py`](../src/numeric_sim.py). Everything else opens a serial port or the I2C ADC at import.
-[`spiral.py`](../src/spiral.py) and [`numeric_sim.py`](../src/numeric_sim.py) have `__main__` matplotlib demos that are the
-only things you can actually *run* on a dev machine.
+If you are reading/editing code off the Pi: every `src/` module *imports*
+without hardware (`callback_functions.py` opens the I2C ADC defensively — reads
+return NaN when it is absent), but real I/O starts at use: constructing a
+`Servoset` opens the serial bus and enables torque, and the `app/` scripts
+`clip_scan.py` / `calibrate_jacobian.py` do that (and start moving motors) at
+module level — don't import them to "check" them. The pure modules —
+[`config.py`](../src/config.py), [`servo_util.py`](../src/servo_util.py),
+[`spiral.py`](../src/spiral.py), [`fit_gaussian.py`](../src/fit_gaussian.py),
+[`numeric_sim.py`](../src/numeric_sim.py), [`step_optimize.py`](../src/step_optimize.py),
+[`optimize.py`](../src/optimize.py), [`datastore.py`](../src/datastore.py),
+[`app/tui.py`](../app/tui.py) — never touch hardware at all.
+[`spiral.py`](../src/spiral.py) and [`numeric_sim.py`](../src/numeric_sim.py)
+have `__main__` matplotlib demos that are the only things you can actually
+*run* on a dev machine.
