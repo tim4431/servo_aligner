@@ -3,7 +3,7 @@
 The entry-point scripts live in ``app/`` but import the library modules that stay
 in ``src/`` -- ``config``, ``servodriver``, ``servo_util``, ``callback_functions``,
 ``optimize``, ``datastore``, ``fit_gaussian``, ``motor_scan`` -- plus the vendored
-``scservo_sdk`` and the expctl stubs (``ServerClass``, ``sequence``, ``utilities``)
+``scservo_sdk`` and the expctl stubs (``ServerClass``, ``sequence``)
 that also live under ``src/``. All of these are imported by flat name.
 
 Running ``python app/<script>.py`` only puts ``app/`` on ``sys.path`` (so the

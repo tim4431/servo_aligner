@@ -301,8 +301,7 @@ class ZmqController:
     ``Server.main_loop(cond_fn)`` polls every 10 ms and re-checks ``cond_fn``, so
     setting the stop event makes the thread exit cleanly. ``zmq_server`` is
     imported lazily so the rest of the console still works if the vendored
-    expctl stubs (``ServerClass`` -> ``sequence`` -> ``utilities.util``) or
-    ``pyzmq`` are unavailable.
+    expctl stub (``ServerClass``) or ``pyzmq`` is unavailable.
     """
 
     def __init__(self, servos):

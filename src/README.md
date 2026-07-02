@@ -25,7 +25,7 @@ physics and algorithm rationale.
 | `datastore.py` | `DataStore`: one named run folder per task under `data/`, with uniform save/load helpers. |
 | `numeric_sim.py` | Hardware-free geometric simulation of the coupled-knob clip scans (see `doc/simulation.md`). |
 | `scservo_sdk/` | Vendored FEETECH serial-servo SDK (do not edit). |
-| `sequence.py` / `ServerClass.py` / `utilities/` | Vendored expctl framework code + a minimal `utilities.util` stub, so the ZMQ server (`app/zmq_server.py`) can unpickle `Sequence` objects and run standalone. |
+| `ServerClass.py` / `sequence.py` | Trimmed expctl framework code: the ZMQ `Server` base class plus the minimal `Sequence`/`Channel`/`Interval` data shells needed to unpickle client sequences. `sequence.py` is only a re-export shim so pickles referencing module `sequence` resolve — don't delete or rename it. |
 
 ## Hardware caveat
 

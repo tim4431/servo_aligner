@@ -12,6 +12,9 @@ photodiode as feedback. Suggested reading order:
 7. [application.md](application.md) — beam centering (clip scan) & MOT alignment
 8. [simulation.md](simulation.md) — hardware-free models and the optimizer test bed
 
+Component reference: [servo_server.md](servo_server.md) — the interactive
+console (servo monitor, objective page, ZMQ server switch, one-shot CLI).
+
 Config templates live in [`../config/`](../config/): [`machine.template.yaml`](../config/machine.template.yaml)
 and [`calibration.template.yaml`](../config/calibration.template.yaml) (copy to
 `config/machine.yaml` / `config/calibration.yaml`). Also here:

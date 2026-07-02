@@ -1,10 +1,25 @@
 #!/usr/bin/python
+"""Vendored expctl server base class, plus the Sequence pickle shells.
+
+``Server`` is a trimmed copy of the lab expctl framework's ZMQ REP server base
+class: it owns the socket, the command dispatch (SEQ / QUEUE / RUN /
+GETPLOTDATA / PING) and the polling main loop. A concrete server —
+``app/zmq_server.py``'s ``STSServer`` — subclasses it and implements
+``queue`` / ``run`` / ``plotdata``.
+
+Below it live the minimal **data shells** needed to unpickle the ``Sequence``
+objects expctl clients send with the SEQ command: ``Sequence``, ``Channel``,
+``Interval`` and ``id_trans``. Unpickling never runs ``__init__`` or methods —
+it just restores the instance attributes the client set — so the shells carry
+no behaviour beyond what the server reads. Clients pickle these classes from a
+top-level module named ``sequence``, so ``sequence.py`` re-exports them under
+that exact name; keep the two in sync.
+"""
 import sys
-import zmq
-from pickle import dumps, loads
-import sequence
 import time
-import numpy as np
+from pickle import dumps, loads
+
+import zmq
 import coloredlogs, logging
 
 # Create a logger object.
@@ -14,14 +29,14 @@ coloredlogs.install(level='DEBUG', logger=logger)
 #=============================== Server Class ==================================#
 class Server:
 	# Create ZeroMQ context
-	
+
 	def __init__(self, name, port, message=''):
 		self.message = message
 		self.name = name
 		self.port = port
 		self.seq = None
 		self.sock = None
-	
+
 		if self.message:
 			print((self.message))
 		self.context = zmq.Context()
@@ -68,9 +83,6 @@ class Server:
 		plt_data = self.plotdata()
 		self.send_msg("DATA", plt_data)
 
-	def plotdata(self):
-		return DataForPlot(self.seq)
-
 	def cmd_seq(self, data):
 		self.seq = data # unpack the sequence
 		numChannels = 0
@@ -79,7 +91,7 @@ class Server:
 		logger.debug("Received sequence ({} channels): {}".format(numChannels, self.seq.name))
 		reply = "Received sequence ({} channels): {}".format(numChannels, self.seq.name)
 		self.send_msg(self.ReplyHeader() + reply)
-	
+
 	def cmd_queue(self):
 		if self.seq == None:
 			logger.error('QUEUE failed. Sequence has not been imported!')
@@ -91,9 +103,6 @@ class Server:
 			#DO not reply for QUEUE TODO figure out correct response scheme for QUEUE
 			self.send_msg(self.ReplyHeader() + 'Successfully ran sequence ({} seconds)'.format(time_taken))
 
-	def queue(self):
-		return RunServer(self.seq, autostart=0)
-
 	def cmd_run(self):
 		if self.seq == None:
 			logger.error('Run() failed. Sequence has not been imported!')
@@ -103,9 +112,6 @@ class Server:
 			time_taken = '%.2f' % success
 			logger.debug('Successfully ran sequence ({} seconds)'.format(time_taken))
 			self.send_msg(self.ReplyHeader() + 'Successfully ran sequence ({} seconds)'.format(time_taken))
-
-	def run(self):
-		return RunServer(self.seq)
 
 	def main_loop(self, cond_fn=(lambda : True)):
 		while cond_fn():
@@ -120,7 +126,7 @@ class Server:
 				else:
 					if command == "RUN":  # Run the sequence (if we've already received it)
 						self.cmd_run()
-					
+
 					elif command == "SEQ": # Load in a sequence
 						self.cmd_seq(data)
 
@@ -129,10 +135,10 @@ class Server:
 
 					elif command == 'GETPLOTDATA': # Get plot data from server
 						self.cmd_plotdata()
-					
+
 					elif command == 'PING':
 						self.cmd_ping()
-						
+
 					else:
 						self.cmd_unknown(command)
 
@@ -140,20 +146,40 @@ class Server:
 		self.sock.close()
 		self.context.term()
 
-def DataForPlot(seq):
-	return np.zeros(10)
 
-def RunServer(seq, autostart = 1):
-	time.sleep(0.11)
-	return 0.11
+#===================== Sequence pickle shells (see module docstring) ===========#
+# pickle.loads reconstructs the client's objects onto these classes without
+# calling __init__, so they only need to exist and be found under the module
+# name recorded in the pickle ("sequence" -- re-exported by sequence.py).
 
-if __name__ == '__main__':
+def id_trans(x):
+	"""Identity transform -- the default Channel transform_t / transform_v.
 
-	message = """
-	===========================================
-	==       Dummy Digital Output Server     ==
-	==              for PCIe 6537            ==
-	=========================================== 
-	"""
-	server = Server("DOut1", 50001, message)
-	server.main_loop()
+	Referenced by name from client pickles (Channel._transfunc_t/_transfunc_v),
+	so it must stay importable even though nothing here calls it."""
+	return x
+
+
+class Interval(tuple):
+	"""One ramp segment ``(t_start, V_start, t_stop, V_stop)`` -- a plain tuple
+	with named accessors."""
+	def start_t(self):
+		return self[0]
+	def start_V(self):
+		return self[1]
+	def end_t(self):
+		return self[2]
+	def end_V(self):
+		return self[3]
+
+
+class Channel:
+	"""Data shell for one sequence channel. The server reads ``_TransValues``
+	(the hardware-scale ``Interval`` list); all other attributes are restored
+	from the pickle but unused here."""
+
+
+class Sequence:
+	"""Data shell for a pickled expctl sequence. The server reads ``name`` and
+	``allChannels`` (a fixed-length list of ``Channel``/``None``); all other
+	attributes are restored from the pickle but unused here."""

@@ -18,7 +18,7 @@ The physics background, alignment procedure, de-hysteresis rationale, Jacobian/o
   - `tui.py` — shared curses toolkit (no project imports), `_bootstrap.py` — path shim
 
   Every entry script does `import _bootstrap` **first**, which prepends the sibling `src/` dir to `sys.path` so the flat library imports (`from servodriver import Servoset`, …) resolve.
-- **`src/`** — the importable library: `config.py`, `servodriver.py`, `servo_util.py`, `callback_functions.py`, `optimize.py`, `step_optimize.py`, `spiral.py`, `datastore.py`, `fit_gaussian.py`, `motor_scan.py`, `numeric_sim.py`, plus vendored code (`scservo_sdk/`, and the expctl stubs `sequence.py` / `ServerClass.py` / `utilities/`). No library module imports an `app/` script — dependencies point app → src only, so the library stays importable on its own.
+- **`src/`** — the importable library: `config.py`, `servodriver.py`, `servo_util.py`, `callback_functions.py`, `optimize.py`, `step_optimize.py`, `spiral.py`, `datastore.py`, `fit_gaussian.py`, `motor_scan.py`, `numeric_sim.py`, plus vendored code (`scservo_sdk/`, and the expctl stubs `ServerClass.py` / `sequence.py`). No library module imports an `app/` script — dependencies point app → src only, so the library stays importable on its own.
 - **`config/`** — the two gitignored YAML config files and their checked-in templates. **`doc/`** — developer documentation. **`state/`** / **`data/`** — runtime state and task output (gitignored). **`example/`** — exploratory notebooks and FEETECH SDK examples.
 
 ## Hardware & import safety
@@ -78,7 +78,7 @@ python app/zmq_server.py           # run the ZMQ server directly (no console)
 
 ## How the code runs
 
-1. **ZMQ server** — `app/zmq_server.py` (class `STSServer`) subclasses the vendored `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework: it listens on a ZMQ REP socket, receives pickled `Sequence` objects (`src/sequence.py` is a vendored copy of the expctl class), and drives servos to the requested angles during the `QUEUE` phase. Its `Servoset` is *injected*, and `main_loop(cond_fn)` polls every 10 ms re-checking `cond_fn`, so the console can run it in a background thread (sharing one serial connection) and stop it cleanly.
+1. **ZMQ server** — `app/zmq_server.py` (class `STSServer`) subclasses the vendored `ServerClass.Server` and plugs into the lab's external `expctl` experiment-control framework: it listens on a ZMQ REP socket, receives pickled `Sequence` objects (unpickled onto the minimal data shells in `ServerClass.py`), and drives servos to the requested angles during the `QUEUE` phase. Its `Servoset` is *injected*, and `main_loop(cond_fn)` polls every 10 ms re-checking `cond_fn`, so the console can run it in a background thread (sharing one serial connection) and stop it cleanly.
 2. **Interactive console** — `app/servo_server.py`, a curses control panel:
    - a live **servo monitor** (select a servo and field with the arrow keys to set its angle or toggle torque);
    - an **objective page** listing `callback_functions.OBJECTIVES` with their live, NaN-safe values, where the active objective is selected;
@@ -88,7 +88,7 @@ python app/zmq_server.py           # run the ZMQ server directly (no console)
    The server and the console share one `Servoset`, which serialises every bus transaction with an `RLock` (per transaction, not per move), so the monitor and manual controls work **while the server is running** without their serial packets interleaving.
 3. **Standalone scripts** — `app/clip_scan.py` and `app/calibrate_jacobian.py`, run directly (see Commands).
 
-Everything runs standalone. (The code was previously deployed inside the lab's `expctl` framework; the vendored `sequence.py` / `ServerClass.py` / `utilities/` stubs under `src/` that back the ZMQ server are what remain of that path.)
+Everything runs standalone. (The code was previously deployed inside the lab's `expctl` framework; the trimmed `ServerClass.py` / `sequence.py` stubs under `src/` that back the ZMQ server are what remain of that path.)
 
 ## Core concepts (needed to read the optimization code)
 
@@ -108,4 +108,4 @@ Everything runs standalone. (The code was previously deployed inside the lab's `
 ## Vendored / external
 
 - `src/scservo_sdk/` — FEETECH's serial servo SDK, vendored. Don't edit; it's upstream.
-- `src/sequence.py` / `src/ServerClass.py` — copies of expctl framework code so the server can unpickle `Sequence` objects; `sequence.py` does `from utilities.util import *`, and `src/utilities/util.py` is a minimal vendored stub of that (the coloured-print helpers, routed to logging) so the ZMQ server can start standalone.
+- `src/ServerClass.py` — trimmed expctl framework code: the ZMQ `Server` base class plus the minimal `Sequence`/`Channel`/`Interval` data shells needed to unpickle the sequences clients send. `src/sequence.py` is only a re-export shim: clients pickle these classes from a top-level module named `sequence`, so that module name must stay importable — don't delete or rename it.
