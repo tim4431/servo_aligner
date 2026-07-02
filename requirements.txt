@@ -1,7 +1,5 @@
 # Python dependencies for servo_aligner (FEETECH STS3032 mirror-mount control).
 #
-# Version floors are the ones validated on the Pi under the `expctl3` conda env
-# (Python 3.8). Install everything with:
 #     pip install -r requirements.txt
 # or run the setup wizard, which installs any that are missing:
 #     python app/init_helper.py

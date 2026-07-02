@@ -4,8 +4,10 @@
 Run it and pick an action from the menu (or "Full guided setup" to do them all,
 in order). The individual options are:
 
-* **Python dependencies** -- check ``requirements.txt`` and offer to
-  ``pip install`` any that are missing.
+* **Python environment** -- create a project-local ``.venv`` with **uv** and
+  sync ``requirements.txt`` into it (falling back to ``pip`` if uv is absent).
+  Once the venv exists the entry scripts auto-activate into it (see
+  ``app/_bootstrap.py``).
 * **machine.yaml** -- create it from the template and edit it interactively:
   hardware, the ``servo.channels`` map (built from a live bus scan) and the
   channel grouping ``masks``. Comments are preserved by round-tripping through
@@ -650,17 +652,35 @@ def register_setup(devices, baudrate, channels, id_max):
 
 
 # =============================================================================
-# Python dependencies
+# Python environment (uv) + dependencies
 # =============================================================================
-# requirements.txt is the single source of truth for *which* packages and which
-# versions. The only thing we hardcode is the handful of distributions whose
-# import name differs from the pip name -- needed to probe "is it importable?"
-# *before* installing (that mapping can't be derived from the dist name alone).
+# The project deploys as a project-local ``.venv`` created and synced by **uv**
+# (a single static binary that can also provision the Python interpreter). uv is
+# driven against ``requirements.txt`` -- which stays the single source of truth
+# for the package set -- through its pip interface, so there is no pyproject or
+# lockfile to maintain. When uv is unavailable and can't be installed we fall
+# back to ``pip`` into the current interpreter, so the wizard still works.
+#
+# The only thing we hardcode is the handful of distributions whose import name
+# differs from the pip name -- needed to probe "is it importable?" (that mapping
+# can't be derived from the dist name alone).
 _IMPORT_NAME = {
     "PyYAML": "yaml",
     "pyserial": "serial",
     "pyzmq": "zmq",
 }
+
+# Project layout for the venv. The repo root holds ``.venv`` (uv's default) and
+# requirements.txt; app/_bootstrap.py re-execs the entry scripts into this same
+# interpreter, so ``python app/<script>.py`` self-activates the environment.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+VENV_DIR = REPO_ROOT / ".venv"
+UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
+# Guard env var shared with _bootstrap.py so a re-exec into the venv can't loop.
+_REEXEC_GUARD = "SERVO_ALIGNER_VENV_REEXEC"
+# Set when a freshly-created .venv means the wizard should relaunch inside it;
+# the UI loops watch this and break so main() can os.execv into the venv.
+_NEEDS_REEXEC = False
 
 
 def _find_requirements():
@@ -688,61 +708,220 @@ def _parse_requirements(req_path):
     return pkgs
 
 
-def _missing_packages(pkgs):
-    """Subset of (dist, import) pairs whose import name is not importable."""
-    missing = []
-    for dist, imp in pkgs:
-        try:
-            importlib.import_module(imp)
-        except Exception:
-            missing.append(dist)
-    return missing
+def _missing_packages(pkgs, python=None):
+    """Dist names from ``pkgs`` whose import name isn't importable.
+
+    ``python=None`` checks *this* interpreter with importlib. Passing a path to
+    another interpreter (e.g. the venv's) runs the same probe there via a
+    subprocess, so the venv can be reported on without being inside it; returns
+    None if that interpreter can't be run.
+    """
+    if python is None:
+        missing = []
+        for dist, imp in pkgs:
+            try:
+                importlib.import_module(imp)
+            except Exception:
+                missing.append(dist)
+        return missing
+    imp2dist = {imp: dist for dist, imp in pkgs}
+    probe = (
+        "import importlib, sys\n"
+        "bad = []\n"
+        "for name in sys.argv[1:]:\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except Exception:\n"
+        "        bad.append(name)\n"
+        "print(' '.join(bad))\n"
+    )
+    try:
+        out = subprocess.run([str(python), "-c", probe, *(imp for _d, imp in pkgs)],
+                             capture_output=True, text=True)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return [imp2dist.get(tok, tok) for tok in out.stdout.split()]
 
 
-def install_dependencies():
-    """Check requirements.txt and offer to pip-install whatever is missing."""
-    req = _find_requirements()
-    if req is None:
-        print("  requirements.txt not found; skipping dependency check")
+def _venv_python(venv_dir=VENV_DIR):
+    """Interpreter path inside ``venv_dir`` (posix ``bin/`` or Windows ``Scripts/``)."""
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _venv_exists(venv_dir=VENV_DIR):
+    return _venv_python(venv_dir).exists()
+
+
+def _in_project_venv(venv_dir=VENV_DIR):
+    """True when the running interpreter lives inside ``venv_dir``."""
+    try:
+        return Path(sys.prefix).resolve() == venv_dir.resolve()
+    except OSError:
+        return False
+
+
+def _find_uv():
+    """Locate the uv binary: PATH first, then the installer's default targets
+    (~/.local/bin, ~/.cargo/bin), which may not be on PATH yet in this process."""
+    exe = shutil.which("uv")
+    if exe:
+        return exe
+    for cand in (Path.home() / ".local" / "bin" / "uv",
+                 Path.home() / ".cargo" / "bin" / "uv"):
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def _run(cmd):
+    """Echo and run a command, returning its exit code (1 if it couldn't start)."""
+    print(f"  running: {' '.join(str(c) for c in cmd)}")
+    try:
+        return subprocess.call(cmd)
+    except Exception as e:
+        print(f"    could not run ({e})")
+        return 1
+
+
+def _install_uv():
+    """Offer to install uv (standalone installer, else pip). Return its path or None."""
+    print("  uv is not installed (looked on PATH, ~/.local/bin, ~/.cargo/bin).")
+    if not confirm("  install uv now?", default=True):
+        print(f"  skipped. Install later:  curl -LsSf {UV_INSTALL_URL} | sh   (or: pip install uv)")
+        return None
+    attempts = []
+    if shutil.which("curl"):
+        attempts.append(["sh", "-c", f"curl -LsSf {UV_INSTALL_URL} | sh"])
+    elif shutil.which("wget"):
+        attempts.append(["sh", "-c", f"wget -qO- {UV_INSTALL_URL} | sh"])
+    attempts.append([sys.executable, "-m", "pip", "install", "uv"])  # cross-platform fallback
+    for cmd in attempts:
+        if _run(cmd) == 0 and _find_uv():
+            uv = _find_uv()
+            print(f"  uv installed: {uv}")
+            return uv
+    print("  could not install uv automatically.")
+    print(f"  install it by hand:  curl -LsSf {UV_INSTALL_URL} | sh   (or: pip install uv)")
+    return None
+
+
+def _create_venv(uv, python=None, venv_dir=VENV_DIR):
+    """``uv venv`` -- create the project venv, optionally pinning a Python."""
+    cmd = [uv, "venv", str(venv_dir)]
+    if python:
+        cmd += ["--python", str(python)]
+    return _run(cmd) == 0 and _venv_exists(venv_dir)
+
+
+def _sync_venv(uv, req, venv_dir=VENV_DIR):
+    """``uv pip install -r requirements.txt`` into ``venv_dir`` (idempotent)."""
+    return _run([uv, "pip", "install", "--python", str(_venv_python(venv_dir)),
+                 "-r", str(req)]) == 0
+
+
+def _reexec_into_venv(venv_dir=VENV_DIR):
+    """Replace this process with the same command run by the venv's interpreter.
+
+    Used after a first-time ``.venv`` is built so the wizard's own config steps
+    pick up the freshly-installed ruyaml. Guarded by an env var (also honoured by
+    _bootstrap.py) so it can't loop.
+    """
+    py = _venv_python(venv_dir)
+    if not py.exists():
         return
-    pkgs = _parse_requirements(req)
+    print(f"\n  relaunching inside the project environment:\n    {py} {' '.join(sys.argv)}")
+    os.environ[_REEXEC_GUARD] = "1"
+    try:
+        os.execv(str(py), [str(py), *sys.argv])
+    except OSError as e:
+        print(f"  could not re-exec into the venv ({e}); continuing in the current interpreter.")
+
+
+def _pip_fallback(req, pkgs):
+    """Old behaviour: pip-install requirements into the current interpreter."""
     missing = _missing_packages(pkgs)
-    print(f"  {len(pkgs) - len(missing)}/{len(pkgs)} packages from {req.name} already importable")
+    print(f"  {len(pkgs) - len(missing)}/{len(pkgs)} packages from {req.name} already importable here")
     if not missing:
         print("  all dependencies satisfied ✓")
         return
     print("  missing: " + ", ".join(missing))
-
-    if not confirm(f"  pip-install the missing packages now (into {sys.executable})?", default=True):
-        print(f"  skipped. Install later with:  {sys.executable} -m pip install -r {req}")
+    if not confirm(f"  pip-install them into {sys.executable}?", default=True):
+        print(f"  skipped. Install later:  {sys.executable} -m pip install -r {req}")
         return
-
-    if confirm(f"  install everything from {req.name} rather than just the missing ones?", default=True):
-        cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", *missing]
-    print(f"  running: {' '.join(cmd)}")
-    try:
-        rc = subprocess.call(cmd)
-    except Exception as e:
-        print(f"  pip install could not run ({e}); install manually and re-run.")
-        return
-    if rc != 0:
+    if _run([sys.executable, "-m", "pip", "install", "-r", str(req)]) != 0:
         print("  pip install failed; resolve manually and re-run.")
         return
-
-    # Pick up anything we just installed (notably the YAML backend this wizard
-    # uses). invalidate_caches() lets the running interpreter see the new dists.
     importlib.invalidate_caches()
-    was_rt = _RUAMEL
-    _resolve_yaml_backend()
+    _resolve_yaml_backend()   # pick up a freshly-installed ruyaml
     still = _missing_packages(pkgs)
-    if still:
-        print("  still missing after install: " + ", ".join(still))
-    else:
-        print("  all dependencies satisfied ✓")
-    if (not was_rt) and _RUAMEL:
-        print("  (comment-preserving YAML now active -- the config files will keep their comments)")
+    print("  all dependencies satisfied ✓" if not still
+          else "  still missing: " + ", ".join(still))
+
+
+def setup_environment(python=None):
+    """Create/sync the project's uv-managed ``.venv`` and report its status.
+
+    requirements.txt stays the source of truth (uv's pip interface installs from
+    it). If a venv gets built that we're not running in, offer to relaunch the
+    wizard inside it (so the later config steps can use the installed packages).
+    Falls back to pip-into-current-interpreter when uv isn't available.
+    """
+    global _NEEDS_REEXEC
+    req = _find_requirements()
+    if req is None:
+        print("  requirements.txt not found; skipping environment setup")
+        return
+    pkgs = _parse_requirements(req)
+
+    print(f"  project venv : {VENV_DIR}  ({'present' if _venv_exists() else 'not created yet'})")
+    print(f"  this wizard  : running {'inside' if _in_project_venv() else 'outside'} it"
+          f"  ({sys.executable})")
+
+    uv = _find_uv() or _install_uv()
+    if uv is None:
+        print("\n  Continuing without uv -- falling back to pip in the current interpreter.")
+        _pip_fallback(req, pkgs)
+        return
+    print(f"  uv           : {uv}")
+
+    # 1. Create the venv if it isn't there yet.
+    if not _venv_exists():
+        if python is None:
+            python = _prompt("Python for the venv (blank = let uv choose; e.g. 3.12)", "") or None
+        if not confirm(f"  create the project venv at {VENV_DIR} with uv?", default=True):
+            print("  skipped venv creation; nothing synced.")
+            return
+        if not _create_venv(uv, python):
+            print("  uv venv failed; resolve manually and re-run.")
+            return
+
+    # 2. Sync requirements into the venv (idempotent -- a no-op if already current).
+    missing = _missing_packages(pkgs, python=_venv_python())
+    if missing:
+        print("  missing in the venv: " + ", ".join(missing))
+    elif missing == []:
+        print("  the venv already has every requirement importable.")
+    if confirm("  sync requirements.txt into the venv now (uv pip install)?", default=True):
+        if not _sync_venv(uv, req):
+            print("  uv sync failed; resolve manually and re-run.")
+            return
+        still = _missing_packages(pkgs, python=_venv_python())
+        print("  all dependencies satisfied in the venv ✓" if not still
+              else "  still missing after sync: " + ", ".join(still))
+
+    # 3. If we built a venv we're not in, offer to relaunch inside it so the
+    #    wizard's own config steps can use the freshly-installed ruyaml.
+    if _venv_exists() and not _in_project_venv():
+        print("\n  The wizard isn't running inside the venv, so it can't yet use the packages\n"
+              "  just installed (e.g. ruyaml for the config files).")
+        if confirm("  relaunch the wizard inside the venv now?", default=True):
+            _NEEDS_REEXEC = True
+        else:
+            print(f"  later, just re-run:  python {sys.argv[0]}   (it auto-enters the venv)")
 
 
 # =============================================================================
@@ -901,7 +1080,8 @@ def parse_args(argv=None):
     p.add_argument("--config-dir", help="directory holding the *.template.yaml files")
     p.add_argument("--scan-max", type=int, default=20, help="highest servo id to scan (default 20)")
     p.add_argument("--full-scan", action="store_true", help="scan the full id range 1..252")
-    p.add_argument("--no-deps", action="store_true", help="skip the dependency check / install step")
+    p.add_argument("--python", help="Python version/path for `uv venv` (e.g. 3.12); default: uv chooses")
+    p.add_argument("--no-deps", action="store_true", help="skip the environment setup step")
     p.add_argument("--no-bus", action="store_true", help="skip all serial-bus / register steps")
     return p.parse_args(argv)
 
@@ -923,11 +1103,11 @@ def _require_backend():
 
 
 def do_dependencies(args):
-    section("Python dependencies")
+    section("Python environment (uv)  -- create .venv & sync requirements.txt")
     if args.no_deps:
-        print("  --no-deps given; skipping dependency check")
+        print("  --no-deps given; skipping environment setup")
         return
-    install_dependencies()
+    setup_environment(python=getattr(args, "python", None))
 
 
 def do_machine(config_dir, scan_max):
@@ -1022,8 +1202,10 @@ def do_identify(config_dir, scan_max):
 
 
 def guided_setup(args, config_dir, scan_max):
-    """The original end-to-end flow: dependencies -> machine -> calibration -> bus."""
+    """The original end-to-end flow: environment -> machine -> calibration -> bus."""
     do_dependencies(args)
+    if _NEEDS_REEXEC:   # env just built; main() will relaunch us inside the venv
+        return
     if not _RUAMEL:
         print(
             "\n  ruyaml is not available, so the config files can't be created/edited.\n"
@@ -1590,52 +1772,99 @@ def _edit_config_tui(stdscr, name, config_dir, title):
         _status(f"{target.name}: changes discarded -- file left unchanged")
 
 
-def deps_tui(stdscr):
+def env_tui(stdscr):
+    """Curses page for the uv environment: install uv, create/sync the .venv, and
+    show per-package status (checked inside the venv when it exists)."""
     req = _find_requirements()
     if req is None:
         _tui_message(stdscr, ["requirements.txt not found next to the project."])
         return
     pkgs = _parse_requirements(req)
+    cache = {"missing": set()}
 
-    def pip_install(full):
-        missing = _missing_packages(pkgs)
-        if not full and not missing:
-            _status("nothing to install -- all present")
+    def refresh():
+        probe = _venv_python() if _venv_exists() else None
+        cache["missing"] = set(_missing_packages(pkgs, python=probe) or [])
+
+    def install_uv():
+        _with_suspend(stdscr, lambda: (print("Installing uv ...\n"), _install_uv()))
+        _status("uv: " + (_find_uv() or "still not installed"))
+
+    def create_venv():
+        uv = _find_uv()
+        if not uv:
+            _tui_message(stdscr, ["uv is not installed -- use 'Install uv' first."])
             return
-        cmd = [sys.executable, "-m", "pip", "install"] + (["-r", str(req)] if full else list(missing))
+        py = _tui_input(stdscr, "Python for the venv (blank = uv default, e.g. 3.12)", "")
+        _with_suspend(stdscr, lambda: (print(f"Creating venv at {VENV_DIR} ...\n"),
+                                       _create_venv(uv, py or None)))
+        refresh()
+        _status(f"venv created at {VENV_DIR}" if _venv_exists() else "venv creation failed (see output)")
 
-        def run():
-            print(f"running: {' '.join(cmd)}\n")
-            try:
-                rc = subprocess.call(cmd)
-            except Exception as e:  # pragma: no cover
-                print(f"pip could not run: {e}")
-                rc = 1
-            importlib.invalidate_caches()
-            _resolve_yaml_backend()   # pick up a freshly-installed ruyaml
-            print("\npip finished" if rc == 0 else "\npip finished WITH ERRORS")
+    def sync_venv():
+        uv = _find_uv()
+        if not uv:
+            _tui_message(stdscr, ["uv is not installed -- use 'Install uv' first."])
+            return
+        if not _venv_exists():
+            _tui_message(stdscr, ["No .venv yet -- use 'Create the project venv' first."])
+            return
+        _with_suspend(stdscr, lambda: (print("Syncing requirements.txt into the venv ...\n"),
+                                       _sync_venv(uv, req)))
+        refresh()
+        _status("venv in sync ✓" if not cache["missing"]
+                else f"still missing: {', '.join(sorted(cache['missing']))}")
 
-        _with_suspend(stdscr, run)
-        still = _missing_packages(pkgs)
-        _status("all dependencies satisfied" if not still else f"still missing: {', '.join(still)}")
+    def relaunch():
+        global _NEEDS_REEXEC
+        if not _venv_exists():
+            _tui_message(stdscr, ["No .venv to enter yet."])
+            return
+        if _in_project_venv():
+            _tui_message(stdscr, ["Already running inside the project venv."])
+            return
+        _NEEDS_REEXEC = True   # run_tui's loop breaks on this so main() can re-exec
+        _status("will relaunch inside the venv on leaving this screen ...")
 
     def build():
-        missing = set(_missing_packages(pkgs))
-        items = [_it_run(f"{dist:<18} [{'MISSING' if dist in missing else 'ok'}]",
-                         lambda: _status("(status only -- use the install actions below)"))
-                 for dist, _imp in pkgs]
-        if missing:
-            items.append(_it_run(f"Install the {len(missing)} missing package(s)", lambda: pip_install(False)))
-        items.append(_it_run("Install everything from requirements.txt", lambda: pip_install(True)))
+        uv = _find_uv()
+        have = _venv_exists()
+        inside = _in_project_venv()
+        items = []
+        if uv:
+            items.append(_it_run(f"uv        : {uv}", lambda: _status(uv)))
+        else:
+            items.append(_it_run("uv        : NOT INSTALLED  (Enter to install)", install_uv))
+        if have:
+            tag = "  [running inside]" if inside else ""
+            items.append(_it_run(f".venv     : present{tag}", lambda: _status(str(VENV_DIR))))
+        else:
+            items.append(_it_run(".venv     : not created  (Enter to create)", create_venv))
+        items.append(_it_run("Recreate the project venv (uv venv)" if have
+                             else "Create the project venv (uv venv)", create_venv))
+        items.append(_it_run("Sync requirements.txt into the venv (uv pip install)", sync_venv))
+        if have and not inside:
+            items.append(_it_run("Relaunch the wizard inside the venv", relaunch))
+        for dist, _imp in pkgs:
+            items.append(_it_run(f"  {dist:<16} [{'MISSING' if dist in cache['missing'] else 'ok'}]",
+                                 lambda: _status("(status only -- use the actions above)")))
         items.append(_it_action("Back", None))
         return items
 
-    _tui_page(stdscr, "Python dependencies", build,
-              subtitle=f"requirements: {req.name}", footer="up/down move - [#] jump - Enter select - q back")
+    def subtitle():
+        where = "inside venv" if _in_project_venv() else f"outside ({Path(sys.executable).name})"
+        return (f"requirements: {req.name}   "
+                f"venv: {'present' if _venv_exists() else 'none'}   wizard: {where}")
+
+    refresh()
+    _tui_page(stdscr, "Python environment (uv)", build, subtitle=subtitle,
+              footer="up/down move - [#] jump - Enter select - q back")
 
 
 def guided_tui(stdscr, config_dir, scan_max):
-    deps_tui(stdscr)
+    env_tui(stdscr)
+    if _NEEDS_REEXEC:   # env just built; run_tui will leave the TUI so main() re-execs
+        return
     if not _RUAMEL:
         _tui_message(stdscr, ["ruyaml is still missing -- install it, then edit the configs."])
         return
@@ -1652,8 +1881,8 @@ def run_tui(config_dir, scan_max):
 
         def build():
             return [
-                _it_action("Full guided setup  (dependencies, machine, calibration, bus)", "guided"),
-                _it_action("Python dependencies", "deps"),
+                _it_action("Full guided setup  (environment, machine, calibration, bus)", "guided"),
+                _it_action("Python environment (uv)  (create .venv, sync deps)", "deps"),
                 _it_action("machine.yaml  (hardware, channel map, masks)", "machine"),
                 _it_action("calibration.yaml  (optics / optimizer tuning)", "calib"),
                 _it_action("Servo configuration  (scan bus, IDs, names, feedback, jog)", "servo"),
@@ -1662,7 +1891,7 @@ def run_tui(config_dir, scan_max):
 
         dispatch = {
             "guided": lambda: guided_tui(stdscr, config_dir, scan_max),
-            "deps": lambda: deps_tui(stdscr),
+            "deps": lambda: env_tui(stdscr),
             "machine": lambda: _edit_config_tui(stdscr, "machine", config_dir, "machine.yaml"),
             "calib": lambda: _edit_config_tui(stdscr, "calibration", config_dir, "calibration.yaml"),
             "servo": lambda: servo_config_tui(stdscr, config_dir, scan_max),
@@ -1674,6 +1903,8 @@ def run_tui(config_dir, scan_max):
             if choice in (None, "exit"):
                 break
             dispatch[choice]()
+            if _NEEDS_REEXEC:   # environment just built -> leave the TUI so main() re-execs
+                break
 
     curses.wrapper(app)
 
@@ -1683,9 +1914,9 @@ def run_tui(config_dir, scan_max):
 # =============================================================================
 def run_menu(args, config_dir, scan_max):
     options = [
-        ("Full guided setup (dependencies -> machine -> calibration -> bus)",
+        ("Full guided setup (environment -> machine -> calibration -> bus)",
          lambda: guided_setup(args, config_dir, scan_max)),
-        ("Check / install Python dependencies",
+        ("Set up the Python environment (uv venv + sync requirements.txt)",
          lambda: do_dependencies(args)),
         ("Create or edit machine.yaml (hardware, channel map, masks)",
          lambda: do_machine(config_dir, scan_max)),
@@ -1716,6 +1947,8 @@ def run_menu(args, config_dir, scan_max):
             continue
         if 1 <= idx <= len(options):
             options[idx - 1][1]()
+            if _NEEDS_REEXEC:   # environment just built -> leave so main() re-execs
+                break
         else:
             print(f"  out of range (1-{len(options)})")
 
@@ -1740,16 +1973,20 @@ def main(argv=None):
     # SERVO_INIT_NOTUI=1 to force the text menu).
     if _tui_available():
         run_tui(config_dir, scan_max)
-        return
+    else:
+        print(
+            "Servo-aligner setup\n"
+            "-------------------\n"
+            "Pick an action below: set up the Python environment, create/edit the config\n"
+            "files, or set up the servo bus. 'Full guided setup' runs them all in order."
+        )
+        print(f"config directory: {config_dir}")
+        run_menu(args, config_dir, scan_max)
 
-    print(
-        "Servo-aligner setup\n"
-        "-------------------\n"
-        "Pick an action below: install dependencies, create/edit the config files,\n"
-        "or set up the servo bus. 'Full guided setup' runs them all in order."
-    )
-    print(f"config directory: {config_dir}")
-    run_menu(args, config_dir, scan_max)
+    # A first-time .venv was just built outside it -> relaunch the wizard inside
+    # it (curses is fully torn down by now, so os.execv is safe here).
+    if _NEEDS_REEXEC:
+        _reexec_into_venv()
 
 
 if __name__ == "__main__":
