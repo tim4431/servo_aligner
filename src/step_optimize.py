@@ -13,6 +13,17 @@ spiral_params = SpiralPathConfig(**SPIRAL_PARAMS)
 BFGS_params = dict(BFGS_PARAMS)
 
 
+class OptimizationAborted(Exception):
+    """Raised from within an optimizer callback to cancel the run in progress.
+
+    This is a deliberate, user-initiated stop (e.g. the servo console's pause
+    menu), not a failure: a callback wrapper raises it on the optimizer's thread
+    and it propagates out of :func:`pts_iterator` / :func:`step_optimize` without
+    an error log. ``args[0]`` may carry a reason string (e.g. ``"stop"`` /
+    ``"revert"``) for the caller to act on.
+    """
+
+
 def score_of(opt_type: str) -> Callable:
     """Map an objective value to a score the optimizers always *maximize*.
 
